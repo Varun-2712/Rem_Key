@@ -1,0 +1,44 @@
+# Rust build artifacts
+target/
+**/target/
+
+# Cargo
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Android
+phone/android/app/build/
+phone/android/.gradle/
+phone/android/local.properties
+phone/android/gradle.properties
+
+# Windows
+*.exe
+*.dll
+*.lib
+*.pdb
+
+# Logs
+*.log
+
+# UniFFI generated
+phone/android/rust/
+*.kt
+*.swift
+
+# Certificates/Keys
+*.pem
+*.key
+*.crt
+
+# Environment
+.env

@@ -1,0 +1,23 @@
+[package]
+name = "pir_agent"
+version = "0.1.0"
+edition = "2021"
+description = "Phone Input Relay - Desktop Agent"
+
+[[bin]]
+name = "pir-agent"
+path = "src/main.rs"
+
+[dependencies]
+pir_protocol = { path = "../../../../core/protocol" }
+pir_transport = { path = "../../../../core/transport" }
+pir_input = { path = "../../../../core/input" }
+pir_session = { path = "../../../../core/session" }
+pir_input_adapter = { path = "../../input_adapter" }
+pir_diagnostics = { path = "../../../../core/diagnostics" }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+uuid = { workspace = true }

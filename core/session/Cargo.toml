@@ -1,0 +1,16 @@
+[package]
+name = "pir_session"
+version = "0.1.0"
+edition = "2021"
+description = "Phone Input Relay - Session management"
+
+[lib]
+name = "pir_session"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+pir_protocol = { path = "../protocol" }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }

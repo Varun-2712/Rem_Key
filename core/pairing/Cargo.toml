@@ -1,0 +1,19 @@
+[package]
+name = "pir_pairing"
+version = "0.1.0"
+edition = "2021"
+description = "Phone Input Relay - Device pairing and identity"
+
+[lib]
+name = "pir_pairing"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+pir_protocol = { path = "../protocol" }
+anyhow = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+zeroize = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }

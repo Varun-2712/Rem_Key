@@ -1,0 +1,16 @@
+[package]
+name = "pir_input"
+version = "0.1.0"
+edition = "2021"
+description = "Phone Input Relay - Input processing pipeline"
+
+[lib]
+name = "pir_input"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+pir_protocol = { path = "../protocol" }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }

@@ -1,0 +1,81 @@
+namespace PhoneInputRelay.Protocol;
+
+enum MouseButton { Left, Right, Middle, Back, Forward }
+enum ButtonState { Pressed, Released }
+enum KeyCode {
+    KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ,
+    KeyK, KeyL, KeyM, KeyN, KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT,
+    KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
+    Digit0, Digit1, Digit2, Digit3, Digit4,
+    Digit5, Digit6, Digit7, Digit8, Digit9,
+    F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+    ControlLeft, ControlRight, ShiftLeft, ShiftRight,
+    AltLeft, AltRight, MetaLeft, MetaRight,
+    ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
+    Home, End, PageUp, PageDown, Insert, Delete,
+    Escape, Tab, Space, Enter, Backspace,
+    CapsLock, NumLock, ScrollLock, PrintScreen, Pause,
+    Numpad0, Numpad1, Numpad2, Numpad3, Numpad4,
+    Numpad5, Numpad6, Numpad7, Numpad8, Numpad9,
+    NumpadAdd, NumpadSubtract, NumpadMultiply, NumpadDivide,
+    NumpadEnter, NumpadDecimal, NumpadComma, NumpadEqual,
+    Semicolon, Equal, Comma, Minus, Period, Slash,
+    Backquote, BracketLeft, BracketRight, Backslash, Quote,
+    MediaPlayPause, MediaStop, MediaTrackNext, MediaTrackPrevious,
+    VolumeUp, VolumeDown, VolumeMute,
+    Unknown(u32)
+}
+enum ClipboardFormat { Text, Image, Html }
+enum ConsumerKeyCode { PlayPause, Stop, NextTrack, PreviousTrack, VolumeUp, VolumeDown, Mute }
+enum DisconnectReason { Normal, Timeout, AuthFailed, ProtocolMismatch, TransportError, PeerReset }
+
+record ModifierState { boolean control; boolean shift; boolean alt; boolean meta; }
+record EventMetadata { string event_id; u64 sequence_number; string timestamp; string session_id; }
+record ProtocolVersion { u16 major; u16 minor; u16 patch; }
+record CapabilitySet { u32 bits; }
+
+union InputEvent {
+    record MouseMove { EventMetadata metadata; i32 delta_x; i32 delta_y; };
+    record MouseButton { EventMetadata metadata; MouseButton button; ButtonState state; };
+    record Scroll { EventMetadata metadata; i32 delta_x; i32 delta_y; };
+    record KeyDown { EventMetadata metadata; KeyCode key; ModifierState modifiers; };
+    record KeyUp { EventMetadata metadata; KeyCode key; ModifierState modifiers; };
+    record ModifierStateEvent { EventMetadata metadata; ModifierState modifiers; };
+    record Text { EventMetadata metadata; string text; };
+    record CompositionStart { EventMetadata metadata; };
+    record CompositionUpdate { EventMetadata metadata; string text; };
+    record CompositionCommit { EventMetadata metadata; string text; };
+    record ClipboardRequest { EventMetadata metadata; ClipboardFormat format; };
+    record ClipboardResponse { EventMetadata metadata; [u8] data; };
+    record ConsumerKey { EventMetadata metadata; ConsumerKeyCode key; ButtonState state; };
+    record SessionEvent { EventMetadata metadata; SessionEventType event; };
+    record DiagnosticEvent { EventMetadata metadata; DiagnosticPayload payload; };
+}
+
+union SessionEventType {
+    record Hello { ProtocolVersion version; CapabilitySet capabilities; };
+    record HelloAck { ProtocolVersion version; CapabilitySet capabilities; };
+    record Heartbeat {};
+    record HeartbeatAck {};
+    record Disconnect { DisconnectReason reason; };
+    record Reconnect { string session_id; };
+}
+
+union DiagnosticPayload {
+    record Latency { f64 rtt_ms; f64 jitter_ms; };
+    record Throughput { u64 bytes_sent; u64 bytes_recv; };
+    record InputStats { f64 touch_hz; f64 sent_hz; f64 coalesced_pct; };
+    record Error { string message; };
+}
+
+interface ProtocolCodec {
+    [Throws=ProtocolError] [u8] encodeEvent(InputEvent event);
+    [Throws=ProtocolError] InputEvent decodeEvent([u8] data);
+    [Throws=ProtocolError] [u8] encodeHello(CapabilitySet capabilities);
+    [Throws=ProtocolError] [u8] encodeHelloAck(CapabilitySet capabilities, string session_id);
+    [Throws=ProtocolError] [u8] encodeHeartbeat(string session_id, u64 seq);
+    [Throws=ProtocolError] [u8] encodeDisconnect(string session_id, u64 seq, DisconnectReason reason);
+    CapabilitySet negotiateCapabilities(CapabilitySet client, CapabilitySet server);
+}
+
+error ProtocolError { string message; }

@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
-use pir_protocol::{InputEvent, EventMetadata, MouseButton, ButtonState};
+use pir_protocol::events::{InputEvent, EventMetadata};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy)]

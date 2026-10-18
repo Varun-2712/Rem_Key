@@ -1,11 +1,13 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use quinn::{Endpoint, ClientConfig, ServerConfig, Connection, SendStream, RecvStream};
+use tokio::io::AsyncWriteExt;
+use quinn::{Endpoint, ClientConfig, ServerConfig, Connection, SendStream, RecvStream, crypto::rustls::QuicClientConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rcgen::{CertificateParams, DistinguishedName, KeyPair, SanType};
 use uuid::Uuid;
-use pir_protocol::{InputEvent, codec::{encode_event, decode_event, FrameFlags, MAX_FRAME_SIZE}};
+use pir_protocol::events::InputEvent;
+use pir_protocol::codec::{encode_event, decode_event, FrameFlags, MAX_FRAME_SIZE};
 use crate::transport::InputTransport;
 use tracing::{debug, warn, error};
 
@@ -41,11 +43,11 @@ impl InputTransport for QuicClientTransport {
         let mut roots = rustls::RootCertStore::empty();
         roots.add(CertificateDer::from(cert.cert.clone()))?;
 
-        let client_config = ClientConfig::new(Arc::new(
-            rustls::ClientConfig::builder()
-                .with_root_certificates(roots)
-                .with_no_client_auth()
-        ));
+        let rustls_config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        
+        let client_config = ClientConfig::new(Arc::new(QuicClientConfig::try_from(rustls_config)?));
 
         let mut endpoint = Endpoint::client("0.0.0.0:0".parse()?)?;
         endpoint.set_default_client_config(client_config);
@@ -57,11 +59,11 @@ impl InputTransport for QuicClientTransport {
     }
 
     async fn send_reliable(&mut self, event: &InputEvent) -> Result<(), anyhow::Error> {
-        let flags = FrameFlags::from_bits_retain(match event {
-            pir_protocol::InputEvent::KeyDown { .. } | pir_protocol::InputEvent::KeyUp { .. } => FrameFlags::RELIABLE | FrameFlags::PRIORITY,
-            pir_protocol::InputEvent::Text { .. } => FrameFlags::RELIABLE,
+        let flags: FrameFlags = match event {
+            InputEvent::KeyDown { .. } | InputEvent::KeyUp { .. } => FrameFlags::RELIABLE | FrameFlags::PRIORITY,
+            InputEvent::Text { .. } => FrameFlags::RELIABLE,
             _ => FrameFlags::RELIABLE,
-        });
+        };
         
         let data = encode_event(event, flags)?;
         
@@ -93,8 +95,8 @@ impl InputTransport for QuicClientTransport {
     }
 
     async fn close(&mut self) -> Result<(), anyhow::Error> {
-        if let Some(tx) = self.reliable_tx.take() {
-            let _ = tx.finish().await;
+        if let Some(mut tx) = self.reliable_tx.take() {
+            let _ = tx.finish();
         }
         if let Some(conn) = self.connection.take() {
             conn.close(0u32.into(), b"closing");
@@ -104,11 +106,13 @@ impl InputTransport for QuicClientTransport {
     }
 
     fn local_addr(&self) -> Option<SocketAddr> {
-        self.connection.as_ref().map(|c| c.local_addr())
+        self.connection.as_ref().and_then(|c| {
+            c.local_ip().map(|ip| SocketAddr::new(ip, 0))
+        })
     }
 
     fn remote_addr(&self) -> Option<SocketAddr> {
-        self.connection.as_ref().map(|c| c.remote_addr())
+        self.connection.as_ref().map(|c| c.remote_address())
     }
 
     fn session_id(&self) -> Uuid {
@@ -118,7 +122,6 @@ impl InputTransport for QuicClientTransport {
 
 pub struct QuicServerTransport {
     endpoint: Endpoint,
-    incoming: quinn::Incoming,
 }
 
 impl QuicServerTransport {
@@ -130,15 +133,14 @@ impl QuicServerTransport {
         )?;
 
         let mut endpoint = Endpoint::server(server_config, addr)?;
-        let incoming = endpoint.accept().await.ok_or_else(|| anyhow::anyhow!("Failed to create incoming stream"))?;
 
-        Ok(Self { endpoint, incoming })
+        Ok(Self { endpoint })
     }
 
     pub async fn accept(&mut self) -> anyhow::Result<QuicServerConnection> {
-        let connecting = self.incoming.accept().await.ok_or_else(|| anyhow::anyhow!("No incoming connection"))?;
+        let connecting = self.endpoint.accept().await.ok_or_else(|| anyhow::anyhow!("No incoming connection"))?;
         let connection = connecting.await?;
-        debug!("Accepted connection from {}", connection.remote_addr());
+        debug!("Accepted connection from {}", connection.remote_address());
 
         let (reliable_tx, reliable_rx) = connection.accept_bi().await?;
         
@@ -168,11 +170,11 @@ impl InputTransport for QuicServerConnection {
     }
 
     async fn send_reliable(&mut self, event: &InputEvent) -> Result<(), anyhow::Error> {
-        let flags = FrameFlags::from_bits_retain(match event {
-            pir_protocol::InputEvent::KeyDown { .. } | pir_protocol::InputEvent::KeyUp { .. } => FrameFlags::RELIABLE | FrameFlags::PRIORITY,
-            pir_protocol::InputEvent::Text { .. } => FrameFlags::RELIABLE,
+        let flags: FrameFlags = match event {
+            InputEvent::KeyDown { .. } | InputEvent::KeyUp { .. } => FrameFlags::RELIABLE | FrameFlags::PRIORITY,
+            InputEvent::Text { .. } => FrameFlags::RELIABLE,
             _ => FrameFlags::RELIABLE,
-        });
+        };
         
         let data = encode_event(event, flags)?;
         self.reliable_tx.write_all(&data).await?;
@@ -193,17 +195,17 @@ impl InputTransport for QuicServerConnection {
     }
 
     async fn close(&mut self) -> Result<(), anyhow::Error> {
-        let _ = self.reliable_tx.finish().await;
+        let _ = self.reliable_tx.finish();
         self.connection.close(0u32.into(), b"closing");
         Ok(())
     }
 
     fn local_addr(&self) -> Option<SocketAddr> {
-        Some(self.connection.local_addr())
+        None // TODO: implement properly
     }
 
     fn remote_addr(&self) -> Option<SocketAddr> {
-        Some(self.connection.remote_addr())
+        Some(self.connection.remote_address())
     }
 
     fn session_id(&self) -> Uuid {
@@ -217,15 +219,18 @@ struct CertBundle {
 }
 
 fn generate_self_signed_cert() -> anyhow::Result<CertBundle> {
-    let mut params = CertificateParams::new(vec!["localhost".to_string()])?;
-    params.distinguished_name = DistinguishedName::new();
-    params.is_ca = false;
+    use rcgen::generate_simple_self_signed;
+    use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
     
-    let key_pair = KeyPair::generate()?;
-    let cert = params.self_signed(&key_pair)?;
+    let cert = generate_simple_self_signed(vec!["localhost".to_string()])?;
+    let cert_der = cert.serialize_der()?;
+    let key_der = cert.serialize_private_key_der();
+    
+    let key_pkcs8 = PrivatePkcs8KeyDer::from(key_der.as_slice()).clone_key();
+    let key = PrivateKeyDer::from(key_pkcs8);
     
     Ok(CertBundle {
-        cert: CertificateDer::from(cert.der().to_vec()),
-        key: PrivateKeyDer::from(key_pair.serialize_der()),
+        cert: CertificateDer::from(cert_der),
+        key,
     })
 }

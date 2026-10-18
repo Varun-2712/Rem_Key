@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 use uuid::Uuid;
-use pir_protocol::{ProtocolVersion, CapabilitySet, DisconnectReason};
+use pir_protocol::events::{ProtocolVersion, CapabilitySet, DisconnectReason};
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

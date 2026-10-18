@@ -1,5 +1,5 @@
-use std::collections::{HashSet, HashMap};
-use pir_protocol::{InputEvent, EventMetadata, KeyCode, ModifierState, MouseButton, ButtonState};
+use std::collections::HashSet;
+use pir_protocol::events::{InputEvent, EventMetadata, KeyCode, ModifierState, MouseButton, ButtonState, ConsumerKeyCode};
 use uuid::Uuid;
 use tracing::warn;
 
@@ -132,7 +132,7 @@ impl InputStateManager {
         }]
     }
 
-    pub fn handle_consumer_key(&mut self, key: pir_protocol::ConsumerKeyCode, state: ButtonState) -> Vec<InputEvent> {
+    pub fn handle_consumer_key(&mut self, key: ConsumerKeyCode, state: ButtonState) -> Vec<InputEvent> {
         self.sequence_number += 1;
         vec![InputEvent::ConsumerKey {
             metadata: EventMetadata::new(self.session_id, self.sequence_number),

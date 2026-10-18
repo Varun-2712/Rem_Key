@@ -1,4 +1,4 @@
-use pir_protocol::CapabilitySet;
+use pir_protocol::events::CapabilitySet;
 
 pub fn negotiate_capabilities(client: CapabilitySet, server: CapabilitySet) -> CapabilitySet {
     client & server

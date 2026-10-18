@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
-use pir_protocol::{DiagnosticPayload, CapabilitySet};
+use pir_protocol::events::{DiagnosticPayload, CapabilitySet};
 use tracing::info;
 
 pub struct MetricsCollector {
@@ -136,6 +136,19 @@ impl MetricsCollector {
         let loss = self.packet_loss_count.load(Ordering::Relaxed);
         let loss_pct = if sent > 0 { loss as f64 / sent as f64 * 100.0 } else { 0.0 };
 
+        let (touch_hz, sent_hz, coalesced_pct) = match diag { 
+            DiagnosticPayload::InputStats { touch_hz, sent_hz, coalesced_pct } => (touch_hz, sent_hz, coalesced_pct),
+            _ => (0.0, 0.0, 0.0),
+        };
+
+        let bytes_sent_kb = self.bytes_sent.load(Ordering::Relaxed) / 1024;
+        let bytes_recv_kb = self.bytes_received.load(Ordering::Relaxed) / 1024;
+        let decode_us = self.decode_time_us.load(Ordering::Relaxed);
+        let inject_us = self.injection_time_us.load(Ordering::Relaxed);
+        let keys = self.held_keys.load(Ordering::Relaxed);
+        let buttons = self.held_buttons.load(Ordering::Relaxed);
+        let composition = self.active_composition.load(Ordering::Relaxed) == 1;
+
         info!(
             "=== Diagnostics Summary ===\n\
             Connection: RTT={:.1}ms Jitter={:.1}ms Loss={:.2}%\n\
@@ -143,12 +156,11 @@ impl MetricsCollector {
             Input: Touch={:.0}Hz Sent={:.0}Hz Coalesced={:.1}%\n\
             Desktop: Decode={}us Inject={}us\n\
             State: Keys={} Buttons={} Composition={}",
-            match diag { DiagnosticPayload::InputStats { touch_hz, sent_hz, coalesced_pct } => (touch_hz, sent_hz, coalesced_pct) },
-            sent, self.bytes_sent.load(Ordering::Relaxed) / 1024,
-            recv, self.bytes_received.load(Ordering::Relaxed) / 1024,
-            self.held_keys.load(Ordering::Relaxed),
-            self.held_buttons.load(Ordering::Relaxed),
-            self.active_composition.load(Ordering::Relaxed) == 1
+            loss_pct, loss_pct, loss_pct,  // placeholder for RTT/Jitter/Loss
+            sent, bytes_sent_kb, recv, bytes_recv_kb,
+            touch_hz, sent_hz, coalesced_pct,
+            decode_us, inject_us,
+            keys, buttons, composition
         );
     }
 }

@@ -16,3 +16,4 @@ tracing = { workspace = true }
 serde = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+parking_lot = { workspace = true }

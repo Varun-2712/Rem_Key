@@ -1,6 +1,6 @@
 use tokio::time::{interval, Duration, MissedTickBehavior};
 use uuid::Uuid;
-use pir_protocol::{InputEvent, EventMetadata, SessionEventType};
+use pir_protocol::events::{InputEvent, EventMetadata, SessionEventType, DisconnectReason};
 use crate::state::SessionManager;
 use tracing::{debug, warn};
 
@@ -49,7 +49,7 @@ impl HeartbeatManager {
                 let _ = self.outgoing_tx.send(InputEvent::SessionEvent {
                     metadata: EventMetadata::new(self.session_id, 0),
                     event: SessionEventType::Disconnect {
-                        reason: pir_protocol::DisconnectReason::Timeout,
+                        reason: DisconnectReason::Timeout,
                     },
                 });
                 break;

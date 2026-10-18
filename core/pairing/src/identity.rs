@@ -1,8 +1,11 @@
 use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
 use rand::rngs::OsRng;
+use rand::Rng;
 use zeroize::Zeroize;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use hex;
 
 #[derive(Clone)]
 pub struct DeviceIdentity {
@@ -12,7 +15,9 @@ pub struct DeviceIdentity {
 
 impl DeviceIdentity {
     pub fn generate() -> Self {
-        let signing_key = SigningKey::generate(&mut OsRng);
+        let mut seed = [0u8; 32];
+        OsRng.fill(&mut seed);
+        let signing_key = SigningKey::from_bytes(&seed);
         let verifying_key = signing_key.verifying_key();
         Self { signing_key, verifying_key }
     }
@@ -32,7 +37,7 @@ impl DeviceIdentity {
     }
 
     pub fn public_key_b64(&self) -> String {
-        base64::encode(self.verifying_key.as_bytes())
+        BASE64_STANDARD.encode(self.verifying_key.as_bytes())
     }
 
     pub fn sign(&self, msg: &[u8]) -> Signature {

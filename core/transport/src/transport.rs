@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use pir_protocol::{InputEvent, CodecError};
+use pir_protocol::events::InputEvent;
+use pir_protocol::codec::CodecError;
 use std::net::SocketAddr;
 use uuid::Uuid;
 
@@ -18,5 +19,3 @@ pub trait InputTransport: Send + Sync {
     fn remote_addr(&self) -> Option<SocketAddr>;
     fn session_id(&self) -> Uuid;
 }
-
-pub mod quic;

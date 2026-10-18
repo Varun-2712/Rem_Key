@@ -85,7 +85,7 @@ pub enum KeyCode {
     Unknown(u32),
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModifierState {
     pub control: bool,
     pub shift: bool,
@@ -158,7 +158,7 @@ pub enum DisconnectReason {
     PeerReset,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum DiagnosticPayload {
     Latency { rtt_ms: f64, jitter_ms: f64 },
     Throughput { bytes_sent: u64, bytes_recv: u64 },

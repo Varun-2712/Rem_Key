@@ -1,19 +1,43 @@
 use crate::identity::{DeviceIdentity, PairingInfo};
-use pir_protocol::CapabilitySet;
+use pir_protocol::events::CapabilitySet;
 use anyhow::Result;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use ed25519_dalek::{Verifier, VerifyingKey};
 
-pub struct PairingManager {
-    local_identity: DeviceIdentity,
-    trusted_devices: std::collections::HashMap<String, TrustedDevice>,
+mod pubkey_serde {
+    use serde::{Serializer, Deserializer, Deserialize};
+    use ed25519_dalek::VerifyingKey;
+    
+    pub fn serialize<S>(key: &VerifyingKey, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_bytes(key.as_bytes())
+    }
+    
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<VerifyingKey, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let bytes: Vec<u8> = Vec::deserialize(deserializer)?;
+        let arr: [u8; 32] = bytes.try_into().map_err(|_| serde::de::Error::custom("Invalid key length"))?;
+        VerifyingKey::from_bytes(&arr).map_err(serde::de::Error::custom)
+    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TrustedDevice {
     pub device_id: String,
+    #[serde(with = "pubkey_serde")]
     pub public_key: ed25519_dalek::VerifyingKey,
     pub name: String,
     pub paired_at: chrono::DateTime<chrono::Utc>,
     pub capabilities: CapabilitySet,
+}
+
+pub struct PairingManager {
+    local_identity: DeviceIdentity,
+    trusted_devices: std::collections::HashMap<String, TrustedDevice>,
 }
 
 impl PairingManager {
@@ -36,8 +60,8 @@ impl PairingManager {
     }
 
     pub fn verify_pairing(&self, pairing_info: &PairingInfo, signature: &ed25519_dalek::Signature, challenge: &[u8]) -> Result<bool> {
-        let public_key_bytes = base64::decode(&pairing_info.public_key)?;
-        let public_key = ed25519_dalek::VerifyingKey::from_bytes(&public_key_bytes.try_into()?)?;
+        let public_key_bytes = BASE64_STANDARD.decode(&pairing_info.public_key)?;
+        let public_key = VerifyingKey::from_bytes(&public_key_bytes[..].try_into().map_err(|_| anyhow::anyhow!("Invalid key length"))?)?;
         Ok(public_key.verify(challenge, signature).is_ok())
     }
 

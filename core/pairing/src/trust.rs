@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use crate::identity::TrustedDevice;
+use crate::pairing::TrustedDevice;
 use anyhow::Result;
 
 pub struct TrustStore {

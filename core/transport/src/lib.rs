@@ -1,5 +1,5 @@
 pub mod config;
-pub mod quic;
 pub mod transport;
+pub mod quic;
 
-use crate::transport::InputTransport;
+pub use transport::InputTransport;

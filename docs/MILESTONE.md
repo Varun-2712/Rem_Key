@@ -5,7 +5,7 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
 
 ---
 
-## ✅ MVP 0 — Core Proof (COMPLETED)
+## ✅ MVP 1 — Core Proof (COMPLETED)
 
 ### Core Infrastructure
 - [x] Cargo workspace with 6 crates
@@ -110,7 +110,7 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
 
 ---
 
-## ⏳ MVP 1 — Reliable Foundation (PENDING)
+## ⏳ MVP 2 — Reliable Foundation (PENDING)
 
 ### Discovery & Pairing
 - [ ] mDNS discovery (`mdns-sd` crate) — service `_phone-input-relay._udp.local.`
@@ -129,7 +129,7 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
 
 ---
 
-## ⏳ MVP 2 — Voice Input (PENDING)
+## ⏳ MVP 3 — Voice Input (PENDING)
 
 ### Android Voice Pipeline
 - [ ] `SpeechRecognizer` integration (Google ML Kit on-device)

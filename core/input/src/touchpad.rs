@@ -24,7 +24,8 @@ pub struct TouchpadConfig {
 impl Default for TouchpadConfig {
     fn default() -> Self {
         Self {
-            tap_timeout: Duration::from_millis(200),
+            // libinput: 180 ms; Android: TOUCH_SLOP 8 dp (~24 px at 3x), DOUBLE_TAP_TIMEOUT 300 ms.
+            tap_timeout: Duration::from_millis(180),
             double_tap_window: Duration::from_millis(300),
             touch_slop: 24.0,
             scroll_px_per_notch: 40.0,

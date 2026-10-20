@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Only covers the moment before Compose draws; matches Linen so there's no flash. -->
+    <style name="Theme.RemKey" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#F6F4F0</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

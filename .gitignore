@@ -12,11 +12,11 @@ target/
 .DS_Store
 Thumbs.db
 
-# Android
-phone/android/app/build/
-phone/android/.gradle/
-phone/android/local.properties
-phone/android/gradle.properties
+# Mobile (Gradle). Rust .so files and UniFFI bindings are generated into build/.
+mobile/.gradle/
+mobile/.kotlin/
+mobile/**/build/
+mobile/local.properties
 
 # Windows
 *.exe
@@ -28,8 +28,7 @@ phone/android/gradle.properties
 *.log
 
 # UniFFI generated (only the generated bindings, never hand-written Kotlin/Swift)
-phone/android/rust/
-phone/**/generated/
+mobile/bindings/
 
 # Certificates/Keys
 *.pem

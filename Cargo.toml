@@ -9,8 +9,9 @@ members = [
     "core/diagnostics",
     "desktop/windows/input_adapter",
     "desktop/windows/agent",
+    "mobile/rust-bridge",
+    "mobile/uniffi-bindgen",
 ]
-exclude = ["phone/android"]
 
 [workspace.dependencies]
 # Core crates
@@ -21,6 +22,7 @@ pir_pairing = { path = "core/pairing" }
 pir_input = { path = "core/input" }
 pir_diagnostics = { path = "core/diagnostics" }
 pir_input_adapter = { path = "desktop/windows/input_adapter" }
+pir_mobile = { path = "mobile/rust-bridge" }
 
 # Core
 serde = { version = "1.0", features = ["derive"] }

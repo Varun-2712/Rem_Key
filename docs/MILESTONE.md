@@ -147,12 +147,15 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
 - [ ] System tray UI for pairing/status
 - [ ] Windows service / auto-start
 
-### Android App (`phone/android`)
-- [ ] Gradle project with Jetpack Compose
-- [ ] UniFFI bindings generation
-- [ ] Touchpad UI (`pointerInput` + `detectDragGestures`)
-- [ ] Keyboard UI
-- [ ] QUIC client integration
+### Android App (`mobile/`, see `mobile/README.md`)
+- [x] `pir_mobile` UniFFI bridge: `RelayClient` with coarse commands, bounded queue, Hello handshake, heartbeats, held-input release on disconnect
+- [x] Gradle project: KMP `shared` module + Jetpack Compose `androidApp`
+- [x] UniFFI bindings generation and cargo-ndk build wired into Gradle
+- [x] Touchpad UI (shared `TouchpadGestures`: move, tap/two-finger tap, natural two-finger scroll)
+- [x] Keyboard UI (committed text + editing keys)
+- [x] QUIC client integration (manual host/port/fingerprint until pairing lands)
+- [ ] First build on a machine with the Android SDK/NDK, then on a real phone
+- [ ] mTLS client identity once `feature/pairing-auth` merges
 
 ### Cross-Platform
 - [ ] macOS (`CGEvent` adapter)
@@ -192,7 +195,7 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
 
 ### Build
 - [ ] Windows cross-compilation setup
-- [ ] Android Gradle + UniFFI plugin config
+- [x] Android Gradle + UniFFI config (Exec tasks, no plugin)
 - [ ] CI/CD pipeline (GitHub Actions with Windows/Linux runners)
 
 ---

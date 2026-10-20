@@ -21,6 +21,9 @@ const LENGTH_PREFIX_LEN: usize = 4;
 /// Incoming events are buffered between the reader tasks and `recv()`.
 const INCOMING_QUEUE_LEN: usize = 1024;
 
+/// How long `close()` waits for buffered reliable frames to reach the peer.
+const CLOSE_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 pub type CertFingerprint = [u8; 32];
 
 /// SHA-256 of a DER certificate. The phone pins this value (delivered via the pairing QR)
@@ -135,7 +138,12 @@ impl InputTransport for QuicConnection {
     }
 
     async fn close(&mut self) -> Result<(), anyhow::Error> {
-        let _ = self.reliable_tx.finish();
+        // Closing the connection discards stream data that hasn't been sent yet, which would
+        // drop the key releases sent right before a disconnect. Wait for the peer to read up
+        // to the end of the stream first, but not forever.
+        if self.reliable_tx.finish().is_ok() {
+            let _ = tokio::time::timeout(CLOSE_FLUSH_TIMEOUT, self.reliable_tx.stopped()).await;
+        }
         self.connection.close(0u32.into(), b"closing");
         if let Some(endpoint) = &self.endpoint {
             endpoint.wait_idle().await;

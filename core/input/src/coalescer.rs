@@ -13,9 +13,13 @@ pub struct TouchPoint {
 
 /// Turns a stream of touch samples (often 120–240 Hz) into relative mouse moves sent at
 /// no more than `target_hz`, accumulating the movement in between.
+///
+/// Movement is scaled linearly by `sensitivity` and never accelerated: the desktop OS
+/// applies the user's own pointer acceleration to relative moves, and applying a second
+/// curve here would compound with it.
 pub struct TouchCoalescer {
     gesture_classifier: GestureClassifier,
-    acceleration: AccelerationCurve,
+    sensitivity: f32,
     tracker: Option<TrackedPointer>,
     /// Sub-pixel movement not yet emitted, so slow drags still move the cursor.
     remainder: (f32, f32),
@@ -31,7 +35,6 @@ struct TrackedPointer {
     pointer_id: u32,
     x: f32,
     y: f32,
-    timestamp: Instant,
 }
 
 impl TouchCoalescer {
@@ -42,7 +45,7 @@ impl TouchCoalescer {
         let hz = target_hz.clamp(Self::MIN_HZ, Self::MAX_HZ);
         Self {
             gesture_classifier: GestureClassifier,
-            acceleration: AccelerationCurve::default(),
+            sensitivity: 1.0,
             tracker: None,
             remainder: (0.0, 0.0),
             pending: (0, 0),
@@ -51,6 +54,11 @@ impl TouchCoalescer {
             sequence_number: 0,
             session_id,
         }
+    }
+
+    /// Desktop pixels per phone touch pixel.
+    pub fn set_sensitivity(&mut self, sensitivity: f32) {
+        self.sensitivity = sensitivity.max(0.0);
     }
 
     /// Feed the current set of touches. Pass an empty slice when all fingers lift.
@@ -71,7 +79,6 @@ impl TouchCoalescer {
             pointer_id: point.pointer_id,
             x: point.x,
             y: point.y,
-            timestamp: point.timestamp,
         });
 
         if self.last_emit.elapsed() >= self.target_interval {
@@ -82,13 +89,8 @@ impl TouchCoalescer {
     }
 
     fn accumulate(&mut self, prev: TrackedPointer, point: TouchPoint) {
-        let (dx, dy) = (point.x - prev.x, point.y - prev.y);
-        let dt = point.timestamp.saturating_duration_since(prev.timestamp).as_secs_f32();
-        let speed = if dt > 0.0 { (dx * dx + dy * dy).sqrt() / dt } else { 0.0 };
-        let gain = self.acceleration.gain(speed);
-
-        let x = dx * gain + self.remainder.0;
-        let y = dy * gain + self.remainder.1;
+        let x = (point.x - prev.x) * self.sensitivity + self.remainder.0;
+        let y = (point.y - prev.y) * self.sensitivity + self.remainder.1;
         let (whole_x, whole_y) = (x.trunc(), y.trunc());
         self.remainder = (x - whole_x, y - whole_y);
         self.pending.0 = self.pending.0.saturating_add(whole_x as i32);
@@ -146,30 +148,6 @@ impl GestureClassifier {
     }
 }
 
-/// Pointer acceleration: 1:1 below `threshold` (px/s), rising linearly above it, capped.
-#[derive(Debug, Clone, Copy)]
-struct AccelerationCurve {
-    threshold: f32,
-    acceleration: f32,
-    max_gain: f32,
-}
-
-impl Default for AccelerationCurve {
-    fn default() -> Self {
-        Self { threshold: 100.0, acceleration: 1.5, max_gain: 4.0 }
-    }
-}
-
-impl AccelerationCurve {
-    fn gain(&self, speed: f32) -> f32 {
-        if speed > self.threshold {
-            (1.0 + (speed - self.threshold) / self.threshold * self.acceleration).min(self.max_gain)
-        } else {
-            1.0
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,7 +178,6 @@ mod tests {
     #[test]
     fn slow_drag_moves_by_finger_distance() {
         let mut c = TouchCoalescer::new(Uuid::nil(), 1000);
-        // 1 px per 20 ms = 50 px/s, below the acceleration threshold.
         assert_eq!(drag(&mut c, Instant::now(), 40, 1.0, -0.5, 20), (40, -20));
     }
 
@@ -211,11 +188,17 @@ mod tests {
     }
 
     #[test]
-    fn fast_drag_is_accelerated_but_capped() {
+    fn fast_drag_is_not_accelerated() {
         let mut c = TouchCoalescer::new(Uuid::nil(), 1000);
-        // 10 px per 4 ms = 2500 px/s.
-        let (x, _) = drag(&mut c, Instant::now(), 10, 10.0, 0.0, 4);
-        assert!(x > 100 && x <= 400, "got {x}");
+        // 10 px per 4 ms = 2500 px/s: still exactly the finger's distance.
+        assert_eq!(drag(&mut c, Instant::now(), 10, 10.0, 0.0, 4), (100, 0));
+    }
+
+    #[test]
+    fn sensitivity_scales_movement() {
+        let mut c = TouchCoalescer::new(Uuid::nil(), 1000);
+        c.set_sensitivity(1.5);
+        assert_eq!(drag(&mut c, Instant::now(), 40, 1.0, 0.0, 20), (60, 0));
     }
 
     #[test]

@@ -19,6 +19,9 @@ pub struct TouchpadConfig {
     pub natural_scrolling: bool,
     /// Maximum rate of cursor-move events.
     pub move_hz: u32,
+    /// Desktop pixels per touch pixel. Not an acceleration curve: the OS applies the
+    /// user's own pointer acceleration on the desktop side.
+    pub sensitivity: f32,
 }
 
 impl Default for TouchpadConfig {
@@ -31,6 +34,7 @@ impl Default for TouchpadConfig {
             scroll_px_per_notch: 40.0,
             natural_scrolling: true,
             move_hz: 120,
+            sensitivity: 1.0,
         }
     }
 }
@@ -68,8 +72,10 @@ enum TwoFingerGesture { Undecided, Scroll, Pinch }
 
 impl Touchpad {
     pub fn new(session_id: Uuid, config: TouchpadConfig) -> Self {
+        let mut pan = TouchCoalescer::new(session_id, config.move_hz);
+        pan.set_sensitivity(config.sensitivity);
         Self {
-            pan: TouchCoalescer::new(session_id, config.move_hz),
+            pan,
             config,
             phase: Phase::Idle,
             last_tap: None,

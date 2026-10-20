@@ -37,8 +37,8 @@ async fn main() -> Result<()> {
         .with_env_filter(if args.verbose { "debug" } else { "info" })
         .init();
 
-    if args.dry_run || cfg!(not(windows)) {
-        if cfg!(not(windows)) {
+    if args.dry_run || !pir_input_adapter::HAS_NATIVE_ADAPTER {
+        if !pir_input_adapter::HAS_NATIVE_ADAPTER {
             warn!("No native input adapter for this platform yet; running in dry-run mode");
         }
         run(args, DryRunAdapter::new()?).await

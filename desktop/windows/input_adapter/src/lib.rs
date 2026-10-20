@@ -25,7 +25,15 @@ mod windows;
 #[cfg(windows)]
 pub use crate::windows::WindowsInputAdapter as PlatformAdapter;
 
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use crate::macos::MacInputAdapter as PlatformAdapter;
+
 mod dry_run;
 pub use dry_run::DryRunAdapter;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub use dry_run::DryRunAdapter as PlatformAdapter;
+
+/// Whether `PlatformAdapter` injects real input on this platform (otherwise it only logs).
+pub const HAS_NATIVE_ADAPTER: bool = cfg!(any(windows, target_os = "macos"));

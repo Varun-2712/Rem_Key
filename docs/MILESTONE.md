@@ -155,7 +155,7 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
 - [ ] QUIC client integration
 
 ### Cross-Platform
-- [ ] macOS (`CGEvent` adapter)
+- [x] macOS (`CGEvent` adapter) — media/volume keys pending
 - [ ] Linux X11 / Wayland adapters
 - [ ] iOS (SwiftUI)
 - [ ] Bluetooth HID transport

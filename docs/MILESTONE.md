@@ -57,30 +57,24 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
   - Updates activity on incoming heartbeat/ack
 
 ### `pir_pairing` — Device Identity & Pairing
-- [x] `DeviceIdentity` with Ed25519 keypair (signing + verifying)
-  - `generate()` — new random identity
-  - `from_bytes()` — restore from 32-byte seed
-  - `public_key_b64()` — base64 encoded public key
-  - `sign()` / `verify()` — message signing
-  - `device_id()` — short human-readable ID
-  - Zeroize on drop
-- [x] `PairingInfo` QR code payload (JSON):
+- [x] Devices are identified by a persistent self-signed TLS certificate; peers refer to
+  each other by its SHA-256 fingerprint (`StoredIdentity`, `identity.json`)
+- [x] Mutual TLS: the handshake proves each side holds the key behind its fingerprint;
+  the phone pins the agent's fingerprint, the agent checks the phone's against the trust store
+- [x] `PairingInfo` QR payload (JSON, version 2):
   ```json
   {
-    "version": 1,
-    "device_id": "pir-...",
-    "public_key": "base64...",
-    "endpoint": "quic://192.168.1.50:8080",
-    "name": "Phone Name",
-    "capabilities": ["mouse", "keyboard", "text", ...]
+    "version": 2,
+    "name": "Desktop name",
+    "endpoints": ["192.168.1.50:8080"],
+    "cert_fingerprint": "hex sha-256 of the agent certificate",
+    "secret": "one-time 128-bit secret (hex)"
   }
   ```
-- [x] `PairingManager` with trust store
-  - `generate_pairing_qr()` — creates QR data
-  - `verify_pairing()` — challenge-response auth
-  - `add_trusted_device()` / `is_trusted()` / `get_trusted()`
-- [x] `TrustedDevice` with serde serialization (custom pubkey serde)
-- [x] `capability_to_string()` for capability negotiation
+- [x] `PairingWindow`: time-limited (default 120 s), single-use secret; closes after 5 wrong attempts
+- [x] `TrustStore` keyed by fingerprint, persisted as `trusted_devices.json`
+- [x] Secrets written atomically with owner-only (0600) permissions (`fsutil::write_private`)
+- [x] Agent CLI: `--pair` (terminal QR), `--list-devices`, `--forget <prefix>`, `--data-dir`
 
 ### `pir_input` — Input Processing Pipeline
 - [x] `TouchCoalescer` — high-frequency touch processing:
@@ -114,17 +108,17 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
 
 ### Discovery & Pairing
 - [ ] mDNS discovery (`mdns-sd` crate) — service `_phone-input-relay._udp.local.`
-- [ ] QR code display on desktop, scan on phone
-- [ ] Mutual authentication (challenge-response with Ed25519)
-- [ ] Trust persistence (file-based `TrustStore`)
+- [x] QR code display on desktop (terminal) — scanning on phone pending the app
+- [x] Mutual authentication (mutual TLS with pinned certificate fingerprints)
+- [x] Trust persistence (file-based `TrustStore`)
 
 ### Connection Reliability
 - [ ] Heartbeat + timeout detection (implemented in session, needs integration)
 - [ ] Reconnection with session resume (`SessionEvent::Reconnect { session_id }`)
-- [ ] Input state reset on ALL disconnect paths (implemented, needs integration)
+- [x] Input state reset on ALL disconnect paths
 
 ### Capability Negotiation
-- [ ] Hello/HelloAck exchange during session establishment
+- [x] Hello/HelloAck exchange during session establishment
 - [ ] UI adaptation based on negotiated capabilities
 
 ---
@@ -188,7 +182,7 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
 ### Architecture
 - [ ] Verify `reset_input_state()` called on ALL error paths in agent
 - [ ] Add QUIC stream prioritization for key events
-- [ ] Implement proper certificate validation (TOFU for MVP 0, PKI for MVP 1)
+- [x] Certificate validation (pinned fingerprints from QR pairing)
 
 ### Build
 - [ ] Windows cross-compilation setup

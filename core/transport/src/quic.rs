@@ -2,9 +2,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use quinn::{Endpoint, ClientConfig, ServerConfig, Connection, SendStream, RecvStream, TransportConfig, crypto::rustls::QuicClientConfig};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::crypto::{CryptoProvider, WebPkiSupportedAlgorithms};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
-use rustls::{DigitallySignedStruct, SignatureScheme};
+use rustls::{DigitallySignedStruct, DistinguishedName, SignatureScheme};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -21,6 +22,9 @@ const LENGTH_PREFIX_LEN: usize = 4;
 /// Incoming events are buffered between the reader tasks and `recv()`.
 const INCOMING_QUEUE_LEN: usize = 1024;
 
+/// How long `close()` waits for the peer to read what was already sent.
+const CLOSE_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
 pub type CertFingerprint = [u8; 32];
 
 /// SHA-256 of a DER certificate. The phone pins this value (delivered via the pairing QR)
@@ -30,6 +34,38 @@ pub fn cert_fingerprint(cert: &CertificateDer<'_>) -> CertFingerprint {
     let mut out = [0u8; 32];
     out.copy_from_slice(digest.as_ref());
     out
+}
+
+/// A device's certificate and private key. Both sides of a connection present one
+/// (mutual TLS), and peers recognise each other by `fingerprint()`.
+pub struct TlsIdentity {
+    cert: CertificateDer<'static>,
+    key: PrivateKeyDer<'static>,
+}
+
+impl TlsIdentity {
+    /// A new self-signed identity. Persist it with `to_der()` so the fingerprint is stable.
+    pub fn generate() -> anyhow::Result<Self> {
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])?;
+        let key = PrivatePkcs8KeyDer::from(cert.serialize_private_key_der());
+        Ok(Self { cert: CertificateDer::from(cert.serialize_der()?), key: PrivateKeyDer::from(key) })
+    }
+
+    pub fn from_der(cert_der: Vec<u8>, key_der: Vec<u8>) -> Self {
+        Self {
+            cert: CertificateDer::from(cert_der),
+            key: PrivateKeyDer::from(PrivatePkcs8KeyDer::from(key_der)),
+        }
+    }
+
+    /// (certificate DER, PKCS#8 key DER)
+    pub fn to_der(&self) -> (Vec<u8>, Vec<u8>) {
+        (self.cert.to_vec(), self.key.secret_der().to_vec())
+    }
+
+    pub fn fingerprint(&self) -> CertFingerprint {
+        cert_fingerprint(&self.cert)
+    }
 }
 
 fn crypto_provider() -> Arc<CryptoProvider> {
@@ -54,6 +90,7 @@ pub struct QuicConnection {
     incoming: mpsc::Receiver<anyhow::Result<InputEvent>>,
     readers: Vec<JoinHandle<()>>,
     session_id: Uuid,
+    peer_fingerprint: Option<CertFingerprint>,
 }
 
 pub type QuicClientTransport = QuicConnection;
@@ -66,19 +103,34 @@ impl QuicConnection {
             tokio::spawn(read_stream_frames(reliable_rx, tx.clone())),
             tokio::spawn(read_datagrams(connection.clone(), tx)),
         ];
-        Self { endpoint, connection, reliable_tx, incoming, readers, session_id: Uuid::new_v4() }
+        let peer_fingerprint = connection
+            .peer_identity()
+            .and_then(|id| id.downcast::<Vec<CertificateDer<'static>>>().ok())
+            .and_then(|chain| chain.first().map(cert_fingerprint));
+        Self { endpoint, connection, reliable_tx, incoming, readers, session_id: Uuid::new_v4(), peer_fingerprint }
     }
 
-    /// Connect to a desktop agent, accepting only a server certificate whose SHA-256
-    /// matches `expected_fingerprint`.
-    pub async fn connect(addr: SocketAddr, server_name: &str, expected_fingerprint: CertFingerprint) -> anyhow::Result<Self> {
-        Self::connect_with_config(addr, server_name, expected_fingerprint, &QuicConfig::default()).await
+    /// Fingerprint of the certificate the peer proved it holds during the handshake.
+    pub fn peer_fingerprint(&self) -> Option<CertFingerprint> {
+        self.peer_fingerprint
+    }
+
+    /// Connect to a desktop agent as `identity`, accepting only a server certificate whose
+    /// SHA-256 matches `expected_fingerprint`.
+    pub async fn connect(
+        addr: SocketAddr,
+        server_name: &str,
+        expected_fingerprint: CertFingerprint,
+        identity: &TlsIdentity,
+    ) -> anyhow::Result<Self> {
+        Self::connect_with_config(addr, server_name, expected_fingerprint, identity, &QuicConfig::default()).await
     }
 
     pub async fn connect_with_config(
         addr: SocketAddr,
         server_name: &str,
         expected_fingerprint: CertFingerprint,
+        identity: &TlsIdentity,
         config: &QuicConfig,
     ) -> anyhow::Result<Self> {
         let provider = crypto_provider();
@@ -90,7 +142,7 @@ impl QuicConnection {
             .with_protocol_versions(&[&rustls::version::TLS13])?
             .dangerous()
             .with_custom_certificate_verifier(verifier)
-            .with_no_client_auth();
+            .with_client_auth_cert(vec![identity.cert.clone()], identity.key.clone_key())?;
 
         let mut client_config = ClientConfig::new(Arc::new(QuicClientConfig::try_from(rustls_config)?));
         client_config.transport_config(transport_config(config)?);
@@ -135,7 +187,10 @@ impl InputTransport for QuicConnection {
     }
 
     async fn close(&mut self) -> Result<(), anyhow::Error> {
+        // Closing the connection discards stream data still in flight, which would lose a
+        // final message such as a rejection reason; give the peer a moment to read it.
         let _ = self.reliable_tx.finish();
+        let _ = tokio::time::timeout(CLOSE_FLUSH_TIMEOUT, self.reliable_tx.stopped()).await;
         self.connection.close(0u32.into(), b"closing");
         if let Some(endpoint) = &self.endpoint {
             endpoint.wait_idle().await;
@@ -208,18 +263,23 @@ pub struct QuicServerTransport {
 }
 
 impl QuicServerTransport {
+    /// Binds with a throwaway identity; clients cannot pin it across restarts.
     pub async fn bind(addr: SocketAddr) -> anyhow::Result<Self> {
-        Self::bind_with_config(&QuicConfig::default().with_bind_addr(addr)).await
+        Self::bind_with_identity(&QuicConfig::default().with_bind_addr(addr), TlsIdentity::generate()?).await
     }
 
-    pub async fn bind_with_config(config: &QuicConfig) -> anyhow::Result<Self> {
-        let cert = generate_self_signed_cert()?;
-        let fingerprint = cert_fingerprint(&cert.cert);
+    /// Every client must present a certificate and prove it holds the key; which
+    /// certificates are *trusted* is decided by the caller via `peer_fingerprint()`,
+    /// because an unknown phone still needs to connect in order to pair.
+    pub async fn bind_with_identity(config: &QuicConfig, identity: TlsIdentity) -> anyhow::Result<Self> {
+        let fingerprint = identity.fingerprint();
+        let provider = crypto_provider();
+        let client_verifier = Arc::new(RequireClientCert { algorithms: provider.signature_verification_algorithms });
 
-        let rustls_config = rustls::ServerConfig::builder_with_provider(crypto_provider())
+        let rustls_config = rustls::ServerConfig::builder_with_provider(provider)
             .with_protocol_versions(&[&rustls::version::TLS13])?
-            .with_no_client_auth()
-            .with_single_cert(vec![cert.cert], cert.key)?;
+            .with_client_cert_verifier(client_verifier)
+            .with_single_cert(vec![identity.cert], identity.key)?;
         let mut server_config = ServerConfig::with_crypto(Arc::new(
             quinn::crypto::rustls::QuicServerConfig::try_from(rustls_config)?,
         ));
@@ -295,16 +355,46 @@ impl ServerCertVerifier for PinnedCertVerifier {
     }
 }
 
-struct CertBundle {
-    cert: CertificateDer<'static>,
-    key: PrivateKeyDer<'static>,
+/// Requires a client certificate and verifies the handshake signature made with its key,
+/// without judging the certificate itself (see `QuicServerTransport::bind_with_identity`).
+#[derive(Debug)]
+struct RequireClientCert {
+    algorithms: WebPkiSupportedAlgorithms,
 }
 
-fn generate_self_signed_cert() -> anyhow::Result<CertBundle> {
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])?;
-    let key = PrivatePkcs8KeyDer::from(cert.serialize_private_key_der());
-    Ok(CertBundle {
-        cert: CertificateDer::from(cert.serialize_der()?),
-        key: PrivateKeyDer::from(key),
-    })
+impl ClientCertVerifier for RequireClientCert {
+    fn root_hint_subjects(&self) -> &[DistinguishedName] {
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _now: UnixTime,
+    ) -> Result<ClientCertVerified, rustls::Error> {
+        Ok(ClientCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.algorithms.supported_schemes()
+    }
 }

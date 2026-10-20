@@ -6,18 +6,19 @@ description = "Phone Input Relay - Device pairing and identity"
 
 [lib]
 name = "pir_pairing"
-crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 pir_protocol = { path = "../protocol" }
 anyhow = { workspace = true }
-ed25519-dalek = { workspace = true }
 rand = { workspace = true }
-zeroize = { workspace = true }
 serde = { workspace = true }
 serde_json = "1.0"
 tracing = { workspace = true }
-uuid = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }
+dirs = "5"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

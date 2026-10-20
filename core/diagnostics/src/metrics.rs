@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, AtomicU32, Ordering};
-use std::time::{Duration, Instant};
-use pir_protocol::events::{DiagnosticPayload, CapabilitySet};
+use std::time::Instant;
+use pir_protocol::events::DiagnosticPayload;
 use tracing::info;
 
 pub struct MetricsCollector {
@@ -104,20 +104,21 @@ impl MetricsCollector {
         self.active_composition.store(if has_composition { 1 } else { 0 }, Ordering::Relaxed);
     }
 
+    fn average(samples: &[f64]) -> f64 {
+        if samples.is_empty() { 0.0 } else { samples.iter().sum::<f64>() / samples.len() as f64 }
+    }
+
+    pub fn latency(&self) -> DiagnosticPayload {
+        DiagnosticPayload::Latency {
+            rtt_ms: Self::average(&self.rtt_samples.lock()),
+            jitter_ms: Self::average(&self.jitter_samples.lock()),
+        }
+    }
+
     pub fn get_diagnostics(&self) -> DiagnosticPayload {
-        let rtt_samples = self.rtt_samples.lock();
-        let jitter_samples = self.jitter_samples.lock();
-
-        let avg_rtt = if rtt_samples.is_empty() { 0.0 } else {
-            rtt_samples.iter().sum::<f64>() / rtt_samples.len() as f64
-        };
-        let avg_jitter = if jitter_samples.is_empty() { 0.0 } else {
-            jitter_samples.iter().sum::<f64>() / jitter_samples.len() as f64
-        };
-
-        let uptime = self.session_start.elapsed();
-        let touch_hz = self.touch_events_received.load(Ordering::Relaxed) as f64 / uptime.as_secs_f64();
-        let sent_hz = self.events_sent.load(Ordering::Relaxed) as f64 / uptime.as_secs_f64();
+        let uptime = self.session_start.elapsed().as_secs_f64().max(f64::EPSILON);
+        let touch_hz = self.touch_events_received.load(Ordering::Relaxed) as f64 / uptime;
+        let sent_hz = self.events_sent.load(Ordering::Relaxed) as f64 / uptime;
         let coalesced_pct = if self.touch_events_received.load(Ordering::Relaxed) > 0 {
             self.events_coalesced.load(Ordering::Relaxed) as f64 / self.touch_events_received.load(Ordering::Relaxed) as f64 * 100.0
         } else { 0.0 };
@@ -136,6 +137,10 @@ impl MetricsCollector {
         let loss = self.packet_loss_count.load(Ordering::Relaxed);
         let loss_pct = if sent > 0 { loss as f64 / sent as f64 * 100.0 } else { 0.0 };
 
+        let (rtt_ms, jitter_ms) = match self.latency() {
+            DiagnosticPayload::Latency { rtt_ms, jitter_ms } => (rtt_ms, jitter_ms),
+            _ => (0.0, 0.0),
+        };
         let (touch_hz, sent_hz, coalesced_pct) = match diag { 
             DiagnosticPayload::InputStats { touch_hz, sent_hz, coalesced_pct } => (touch_hz, sent_hz, coalesced_pct),
             _ => (0.0, 0.0, 0.0),
@@ -156,7 +161,7 @@ impl MetricsCollector {
             Input: Touch={:.0}Hz Sent={:.0}Hz Coalesced={:.1}%\n\
             Desktop: Decode={}us Inject={}us\n\
             State: Keys={} Buttons={} Composition={}",
-            loss_pct, loss_pct, loss_pct,  // placeholder for RTT/Jitter/Loss
+            rtt_ms, jitter_ms, loss_pct,
             sent, bytes_sent_kb, recv, bytes_recv_kb,
             touch_hz, sent_hz, coalesced_pct,
             decode_us, inject_us,

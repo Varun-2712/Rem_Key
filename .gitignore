@@ -2,9 +2,6 @@
 target/
 **/target/
 
-# Cargo
-Cargo.lock
-
 # IDE
 .vscode/
 .idea/
@@ -30,10 +27,9 @@ phone/android/gradle.properties
 # Logs
 *.log
 
-# UniFFI generated
+# UniFFI generated (only the generated bindings, never hand-written Kotlin/Swift)
 phone/android/rust/
-*.kt
-*.swift
+phone/**/generated/
 
 # Certificates/Keys
 *.pem

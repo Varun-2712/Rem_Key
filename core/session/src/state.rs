@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 use pir_protocol::events::{ProtocolVersion, CapabilitySet, DisconnectReason};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionState {
@@ -71,6 +71,16 @@ impl Session {
             self.state = SessionState::Connected;
             info!("Session {} recovered from degraded state", self.id);
         }
+    }
+
+    /// Called once per heartbeat interval. Counts a missed heartbeat only if nothing was
+    /// received from the peer during the last interval. Returns true if the session
+    /// should now be torn down.
+    pub fn check_liveness(&mut self) -> bool {
+        if self.last_activity.elapsed() < self.heartbeat_interval {
+            return false;
+        }
+        self.handle_heartbeat_timeout()
     }
 
     pub fn handle_heartbeat_timeout(&mut self) -> bool {
@@ -159,5 +169,53 @@ impl SessionManager {
             }
         }
         expired
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn connected_session() -> Session {
+        let mut session = Session::new(CapabilitySet::all());
+        session.negotiate_capabilities(CapabilitySet::all());
+        session
+    }
+
+    fn go_silent(session: &mut Session) {
+        session.last_activity = Instant::now() - session.heartbeat_interval * 2;
+    }
+
+    #[test]
+    fn active_session_never_misses_heartbeats() {
+        let mut session = connected_session();
+        for _ in 0..10 {
+            session.update_activity();
+            assert!(!session.check_liveness());
+        }
+        assert_eq!(session.state, SessionState::Connected);
+    }
+
+    #[test]
+    fn silent_session_degrades_then_disconnects() {
+        let mut session = connected_session();
+        go_silent(&mut session);
+
+        assert!(!session.check_liveness());
+        assert_eq!(session.state, SessionState::Degraded);
+        assert!(!session.check_liveness());
+        assert!(session.check_liveness());
+        assert_eq!(session.state, SessionState::Disconnected);
+    }
+
+    #[test]
+    fn activity_recovers_degraded_session() {
+        let mut session = connected_session();
+        go_silent(&mut session);
+        session.check_liveness();
+        assert_eq!(session.state, SessionState::Degraded);
+
+        session.update_activity();
+        assert_eq!(session.state, SessionState::Connected);
+        assert_eq!(session.missed_heartbeats, 0);
     }
 }

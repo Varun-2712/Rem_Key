@@ -3,7 +3,6 @@ use rand::rngs::OsRng;
 use rand::Rng;
 use zeroize::Zeroize;
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use hex;
 

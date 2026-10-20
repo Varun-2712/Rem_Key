@@ -6,14 +6,11 @@ description = "Phone Input Relay - Platform input adapter"
 
 [lib]
 name = "pir_input_adapter"
-crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 pir_protocol = { workspace = true }
 anyhow = { workspace = true }
-windows = { workspace = true, features = [
-    "Win32_UI_Input_KeyboardAndMouse",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_Foundation",
-] }
 tracing = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }

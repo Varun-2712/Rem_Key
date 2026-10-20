@@ -7,8 +7,10 @@ members = [
     "core/pairing",
     "core/input",
     "core/diagnostics",
+    "desktop/windows/input_adapter",
+    "desktop/windows/agent",
 ]
-exclude = ["phone/android", "desktop"]
+exclude = ["phone/android"]
 
 [workspace.dependencies]
 # Core crates
@@ -31,9 +33,9 @@ bytes = "1.0"
 tokio = { version = "1.0", features = ["full", "macros", "rt-multi-thread"] }
 
 # QUIC
-quinn = "0.11"
-quinn-proto = "0.11"
-rustls = "0.23"
+# ring only: compiling both ring and aws-lc leaves rustls without a default provider
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
 rcgen = "0.11"
 
 # Windows

@@ -14,9 +14,9 @@ anyhow = { workspace = true }
 tokio = { workspace = true }
 bytes = { workspace = true }
 quinn = { workspace = true }
-quinn-proto = { workspace = true }
 rustls = { workspace = true }
 rcgen = { workspace = true }
+ring = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 async-trait = { workspace = true }

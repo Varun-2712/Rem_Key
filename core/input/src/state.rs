@@ -115,11 +115,11 @@ impl InputStateManager {
     }
 
     pub fn handle_composition_commit(&mut self) -> Vec<InputEvent> {
-        self.active_composition = None;
+        let text = self.active_composition.take().map(|c| c.text).unwrap_or_default();
         self.sequence_number += 1;
         vec![InputEvent::CompositionCommit {
             metadata: EventMetadata::new(self.session_id, self.sequence_number),
-            text: String::new(),
+            text,
         }]
     }
 
@@ -154,7 +154,8 @@ impl InputStateManager {
             });
         }
 
-        for button in self.held_mouse_buttons.drain() {
+        let released_buttons: Vec<MouseButton> = self.held_mouse_buttons.drain().collect();
+        for &button in &released_buttons {
             self.sequence_number += 1;
             release_events.push(InputEvent::MouseButton {
                 metadata: EventMetadata::new(self.session_id, self.sequence_number),
@@ -163,7 +164,8 @@ impl InputStateManager {
             });
         }
 
-        if self.modifiers != ModifierState::default() {
+        let had_modifiers = self.modifiers != ModifierState::default();
+        if had_modifiers {
             self.modifiers = ModifierState::default();
             self.sequence_number += 1;
             release_events.push(InputEvent::ModifierState {
@@ -172,7 +174,9 @@ impl InputStateManager {
             });
         }
 
-        if let Some(drag) = self.active_drag.take() {
+        // The drag button is normally in held_mouse_buttons too; release it only once.
+        let had_drag = self.active_drag.is_some();
+        if let Some(drag) = self.active_drag.take().filter(|d| !released_buttons.contains(&d.button)) {
             self.sequence_number += 1;
             release_events.push(InputEvent::MouseButton {
                 metadata: EventMetadata::new(self.session_id, self.sequence_number),
@@ -181,22 +185,22 @@ impl InputStateManager {
             });
         }
 
-        if self.active_composition.is_some() {
-            self.active_composition = None;
+        let had_composition = self.active_composition.is_some();
+        if let Some(composition) = self.active_composition.take() {
             self.sequence_number += 1;
             release_events.push(InputEvent::CompositionCommit {
                 metadata: EventMetadata::new(self.session_id, self.sequence_number),
-                text: String::new(),
+                text: composition.text,
             });
         }
 
         if !release_events.is_empty() {
-            warn!("Reset input state: released {} keys, {} buttons, modifiers={:?}, drag={:?}, composition={:?}",
+            warn!("Reset input state: released {} keys, {} buttons, modifiers_cleared={}, drag={}, composition={}",
                 release_events.iter().filter(|e| matches!(e, InputEvent::KeyUp {..})).count(),
                 release_events.iter().filter(|e| matches!(e, InputEvent::MouseButton {..})).count(),
-                self.modifiers,
-                self.active_drag.is_some(),
-                self.active_composition.is_some()
+                had_modifiers,
+                had_drag,
+                had_composition
             );
         }
 
@@ -207,4 +211,39 @@ impl InputStateManager {
     pub fn get_held_buttons(&self) -> &HashSet<MouseButton> { &self.held_mouse_buttons }
     pub fn get_modifiers(&self) -> ModifierState { self.modifiers }
     pub fn has_active_composition(&self) -> bool { self.active_composition.is_some() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commit_carries_the_composed_text() {
+        let mut state = InputStateManager::new(Uuid::nil());
+        state.handle_composition_start();
+        state.handle_composition_update("hello".into());
+        let events = state.handle_composition_commit();
+        assert!(matches!(&events[..], [InputEvent::CompositionCommit { text, .. }] if text == "hello"));
+        assert!(!state.has_active_composition());
+    }
+
+    #[test]
+    fn reset_releases_everything_once() {
+        let mut state = InputStateManager::new(Uuid::nil());
+        let shift = ModifierState { shift: true, ..Default::default() };
+        state.handle_key_down(KeyCode::ShiftLeft, shift);
+        state.handle_key_down(KeyCode::KeyA, shift);
+        state.handle_mouse_button(MouseButton::Left, true);
+        state.active_drag = Some(DragState { button: MouseButton::Left, start_x: 0, start_y: 0 });
+
+        let events = state.reset_input_state();
+        let key_ups = events.iter().filter(|e| matches!(e, InputEvent::KeyUp { .. })).count();
+        let left_releases = events.iter().filter(|e| matches!(e,
+            InputEvent::MouseButton { button: MouseButton::Left, state: ButtonState::Released, .. })).count();
+        assert_eq!(key_ups, 2);
+        assert_eq!(left_releases, 1);
+        assert!(state.get_held_keys().is_empty());
+        assert_eq!(state.get_modifiers(), ModifierState::default());
+        assert!(state.reset_input_state().is_empty());
+    }
 }

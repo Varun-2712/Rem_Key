@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use pir_protocol::events::{InputEvent, EventMetadata};
 use uuid::Uuid;
@@ -12,143 +11,117 @@ pub struct TouchPoint {
     pub pointer_id: u32,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct MouseMoveEvent {
-    pub delta_x: i32,
-    pub delta_y: i32,
-}
-
+/// Turns a stream of touch samples (often 120–240 Hz) into relative mouse moves sent at
+/// no more than `target_hz`, accumulating the movement in between.
 pub struct TouchCoalescer {
     gesture_classifier: GestureClassifier,
-    velocity_estimator: VelocityEstimator,
     acceleration: AccelerationCurve,
-    movement_buffer: VecDeque<MouseMoveEvent>,
+    tracker: Option<TrackedPointer>,
+    /// Sub-pixel movement not yet emitted, so slow drags still move the cursor.
+    remainder: (f32, f32),
+    pending: (i32, i32),
     last_emit: Instant,
     target_interval: Duration,
     sequence_number: u64,
     session_id: Uuid,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TrackedPointer {
+    pointer_id: u32,
+    x: f32,
+    y: f32,
+    timestamp: Instant,
+}
+
 impl TouchCoalescer {
+    pub const MIN_HZ: u32 = 1;
+    pub const MAX_HZ: u32 = 1000;
+
     pub fn new(session_id: Uuid, target_hz: u32) -> Self {
-        let target_interval = Duration::from_millis(1000 / target_hz as u64);
+        let hz = target_hz.clamp(Self::MIN_HZ, Self::MAX_HZ);
         Self {
-            gesture_classifier: GestureClassifier::new(),
-            velocity_estimator: VelocityEstimator::new(),
+            gesture_classifier: GestureClassifier,
             acceleration: AccelerationCurve::default(),
-            movement_buffer: VecDeque::with_capacity(64),
+            tracker: None,
+            remainder: (0.0, 0.0),
+            pending: (0, 0),
             last_emit: Instant::now(),
-            target_interval,
+            target_interval: Duration::from_secs_f64(1.0 / hz as f64),
             sequence_number: 0,
             session_id,
         }
     }
 
+    /// Feed the current set of touches. Pass an empty slice when all fingers lift.
     pub fn process_touches(&mut self, touches: &[TouchPoint]) -> Option<InputEvent> {
-        if touches.is_empty() {
+        if !matches!(self.gesture_classifier.classify(touches), GestureType::Pan) {
+            // Lifting or switching to a multi-finger gesture ends the pan; the next pan
+            // starts from wherever that finger lands, not from the old position.
+            self.tracker = None;
             return None;
         }
 
-        let gesture = self.gesture_classifier.classify(touches);
-        
-        if !matches!(gesture, GestureType::Pan) {
-            return None;
+        let point = touches[0];
+        match self.tracker {
+            Some(prev) if prev.pointer_id == point.pointer_id => self.accumulate(prev, point),
+            _ => {}
         }
-
-        let primary = touches.iter()
-            .filter(|t| t.pointer_id == 0)
-            .next()
-            .or_else(|| touches.first())
-            .copied();
-
-        let velocity = primary.map(|p| self.velocity_estimator.update(p)).unwrap_or_default();
-        let accelerated = self.acceleration.apply(velocity);
-
-        let delta = MouseMoveEvent {
-            delta_x: accelerated.x as i32,
-            delta_y: accelerated.y as i32,
-        };
-
-        if delta.delta_x != 0 || delta.delta_y != 0 {
-            self.movement_buffer.push_back(delta);
-            self.coalesce_buffer();
-        }
+        self.tracker = Some(TrackedPointer {
+            pointer_id: point.pointer_id,
+            x: point.x,
+            y: point.y,
+            timestamp: point.timestamp,
+        });
 
         if self.last_emit.elapsed() >= self.target_interval {
-            self.last_emit = Instant::now();
-            self.emit_coalesced()
+            self.emit_pending()
         } else {
             None
         }
     }
 
-    fn coalesce_buffer(&mut self) {
-        while self.movement_buffer.len() > 1 {
-            let len = self.movement_buffer.len();
-            let last = self.movement_buffer[len - 1];
-            let prev = self.movement_buffer[len - 2];
+    fn accumulate(&mut self, prev: TrackedPointer, point: TouchPoint) {
+        let (dx, dy) = (point.x - prev.x, point.y - prev.y);
+        let dt = point.timestamp.saturating_duration_since(prev.timestamp).as_secs_f32();
+        let speed = if dt > 0.0 { (dx * dx + dy * dy).sqrt() / dt } else { 0.0 };
+        let gain = self.acceleration.gain(speed);
 
-            if last.delta_x.abs() < 3 && last.delta_y.abs() < 3 &&
-               prev.delta_x.abs() < 3 && prev.delta_y.abs() < 3 {
-                let merged = MouseMoveEvent {
-                    delta_x: prev.delta_x + last.delta_x,
-                    delta_y: prev.delta_y + last.delta_y,
-                };
-                self.movement_buffer.pop_back();
-                self.movement_buffer.pop_back();
-                self.movement_buffer.push_back(merged);
-            } else {
-                break;
-            }
-        }
+        let x = dx * gain + self.remainder.0;
+        let y = dy * gain + self.remainder.1;
+        let (whole_x, whole_y) = (x.trunc(), y.trunc());
+        self.remainder = (x - whole_x, y - whole_y);
+        self.pending.0 = self.pending.0.saturating_add(whole_x as i32);
+        self.pending.1 = self.pending.1.saturating_add(whole_y as i32);
     }
 
-    fn emit_coalesced(&mut self) -> Option<InputEvent> {
-        if self.movement_buffer.is_empty() {
+    fn emit_pending(&mut self) -> Option<InputEvent> {
+        self.last_emit = Instant::now();
+        if self.pending == (0, 0) {
             return None;
         }
-
-        let total = self.movement_buffer.iter().fold(
-            MouseMoveEvent { delta_x: 0, delta_y: 0 },
-            |acc, m| MouseMoveEvent {
-                delta_x: acc.delta_x + m.delta_x,
-                delta_y: acc.delta_y + m.delta_y,
-            }
-        );
-        self.movement_buffer.clear();
-
+        let (delta_x, delta_y) = std::mem::take(&mut self.pending);
         self.sequence_number += 1;
         Some(InputEvent::MouseMove {
             metadata: EventMetadata::new(self.session_id, self.sequence_number),
-            delta_x: total.delta_x,
-            delta_y: total.delta_y,
+            delta_x,
+            delta_y,
         })
     }
 
+    /// Emits any movement still buffered, e.g. when the finger lifts.
     pub fn flush(&mut self) -> Option<InputEvent> {
-        if self.movement_buffer.is_empty() {
-            return None;
-        }
-        self.last_emit = Instant::now();
-        self.emit_coalesced()
+        self.emit_pending()
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum GestureType { None, Pan, Pinch, Scroll, Tap }
+enum GestureType { None, Pan, Pinch, Scroll }
 
-struct GestureClassifier {
-    last_touches: Vec<TouchPoint>,
-}
+struct GestureClassifier;
 
 impl GestureClassifier {
-    fn new() -> Self {
-        Self { last_touches: Vec::new() }
-    }
-
-    fn classify(&mut self, touches: &[TouchPoint]) -> GestureType {
-        self.last_touches = touches.to_vec();
-        
+    fn classify(&self, touches: &[TouchPoint]) -> GestureType {
         match touches.len() {
             1 => GestureType::Pan,
             2 => {
@@ -165,55 +138,106 @@ impl GestureClassifier {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct Velocity { x: f32, y: f32 }
-
-struct VelocityEstimator {
-    last_pos: Option<(f32, f32)>,
-    last_time: Option<Instant>,
-    velocity: Velocity,
-}
-
-impl VelocityEstimator {
-    fn new() -> Self {
-        Self { last_pos: None, last_time: None, velocity: Velocity::default() }
-    }
-
-    fn update(&mut self, point: TouchPoint) -> Velocity {
-        let now = point.timestamp;
-        if let (Some((lx, ly)), Some(lt)) = (self.last_pos, self.last_time) {
-            let dt = now.duration_since(lt).as_secs_f32();
-            if dt > 0.0 {
-                self.velocity.x = (point.x - lx) / dt;
-                self.velocity.y = (point.y - ly) / dt;
-            }
-        }
-        self.last_pos = Some((point.x, point.y));
-        self.last_time = Some(now);
-        self.velocity
-    }
-}
-
+/// Pointer acceleration: 1:1 below `threshold` (px/s), rising linearly above it, capped.
 #[derive(Debug, Clone, Copy)]
 struct AccelerationCurve {
     threshold: f32,
     acceleration: f32,
+    max_gain: f32,
 }
 
 impl Default for AccelerationCurve {
     fn default() -> Self {
-        Self { threshold: 100.0, acceleration: 1.5 }
+        Self { threshold: 100.0, acceleration: 1.5, max_gain: 4.0 }
     }
 }
 
 impl AccelerationCurve {
-    fn apply(&self, velocity: Velocity) -> Velocity {
-        let speed = (velocity.x.powi(2) + velocity.y.powi(2)).sqrt();
+    fn gain(&self, speed: f32) -> f32 {
         if speed > self.threshold {
-            let factor = 1.0 + (speed - self.threshold) / self.threshold * self.acceleration;
-            Velocity { x: velocity.x * factor, y: velocity.y * factor }
+            (1.0 + (speed - self.threshold) / self.threshold * self.acceleration).min(self.max_gain)
         } else {
-            velocity
+            1.0
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn touch(x: f32, y: f32, at: Instant, pointer_id: u32) -> TouchPoint {
+        TouchPoint { x, y, pressure: 1.0, timestamp: at, pointer_id }
+    }
+
+    /// Drags in `steps` samples of (`dx`,`dy`) each, `step_ms` apart, then flushes.
+    fn drag(c: &mut TouchCoalescer, start: Instant, steps: u32, dx: f32, dy: f32, step_ms: u64) -> (i32, i32) {
+        let mut total = (0, 0);
+        for i in 0..=steps {
+            let at = start + Duration::from_millis(step_ms * i as u64);
+            let event = c.process_touches(&[touch(dx * i as f32, dy * i as f32, at, 0)]);
+            add(&mut total, event);
+        }
+        add(&mut total, c.flush());
+        total
+    }
+
+    fn add(total: &mut (i32, i32), event: Option<InputEvent>) {
+        if let Some(InputEvent::MouseMove { delta_x, delta_y, .. }) = event {
+            total.0 += delta_x;
+            total.1 += delta_y;
+        }
+    }
+
+    #[test]
+    fn slow_drag_moves_by_finger_distance() {
+        let mut c = TouchCoalescer::new(Uuid::nil(), 1000);
+        // 1 px per 20 ms = 50 px/s, below the acceleration threshold.
+        assert_eq!(drag(&mut c, Instant::now(), 40, 1.0, -0.5, 20), (40, -20));
+    }
+
+    #[test]
+    fn sub_pixel_moves_are_not_lost() {
+        let mut c = TouchCoalescer::new(Uuid::nil(), 1000);
+        assert_eq!(drag(&mut c, Instant::now(), 100, 0.3, 0.0, 20), (30, 0));
+    }
+
+    #[test]
+    fn fast_drag_is_accelerated_but_capped() {
+        let mut c = TouchCoalescer::new(Uuid::nil(), 1000);
+        // 10 px per 4 ms = 2500 px/s.
+        let (x, _) = drag(&mut c, Instant::now(), 10, 10.0, 0.0, 4);
+        assert!(x > 100 && x <= 400, "got {x}");
+    }
+
+    #[test]
+    fn new_touch_does_not_jump_from_old_position() {
+        let mut c = TouchCoalescer::new(Uuid::nil(), 1000);
+        let start = Instant::now();
+        drag(&mut c, start, 10, 1.0, 0.0, 20);
+        c.process_touches(&[]);
+
+        let later = start + Duration::from_secs(1);
+        let mut total = (0, 0);
+        add(&mut total, c.process_touches(&[touch(500.0, 500.0, later, 1)]));
+        add(&mut total, c.flush());
+        assert_eq!(total, (0, 0));
+    }
+
+    #[test]
+    fn coalesces_to_target_rate() {
+        let mut c = TouchCoalescer::new(Uuid::nil(), 60);
+        let start = Instant::now();
+        let emitted = (0..=20)
+            .filter_map(|i| c.process_touches(&[touch(i as f32, 0.0, start + Duration::from_millis(i), 0)]))
+            .count();
+        // 21 samples fed back-to-back fall inside one 16 ms window.
+        assert!(emitted <= 1, "emitted {emitted}");
+        assert!(c.flush().is_some());
+    }
+
+    #[test]
+    fn zero_hz_does_not_panic() {
+        TouchCoalescer::new(Uuid::nil(), 0);
     }
 }

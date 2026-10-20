@@ -14,14 +14,13 @@ pub fn negotiate_version(client_version: ProtocolVersion, server_version: Protoc
         return Err(VersionError::Unsupported(client_version.min(server_version)));
     }
     
-    // Use the lower of the two versions
-    let negotiated = client_version.min(server_version);
-    
-    if negotiated < ProtocolVersion::MIN_COMPATIBLE {
+    // A major version bump means an incompatible wire format.
+    if client_version.major != server_version.major {
         return Err(VersionError::NegotiationFailed { client: client_version, server: server_version });
     }
-    
-    Ok(negotiated)
+
+    // Within a major version, both sides speak the lower minor version.
+    Ok(client_version.min(server_version))
 }
 
 pub fn is_compatible(client_version: ProtocolVersion, server_version: ProtocolVersion) -> bool {
@@ -42,7 +41,7 @@ mod tests {
         assert_eq!(negotiate_version(v1_0_0, v1_0_0).unwrap(), v1_0_0);
         assert_eq!(negotiate_version(v1_0_0, v1_1_0).unwrap(), v1_0_0);
         assert_eq!(negotiate_version(v1_1_0, v1_0_0).unwrap(), v1_0_0);
-        assert_eq!(negotiate_version(v1_1_0, v2_0_0).unwrap(), v1_1_0);
+        assert!(negotiate_version(v1_1_0, v2_0_0).is_err());
     }
 
     #[test]

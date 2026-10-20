@@ -124,7 +124,7 @@ private fun Touchpad(gestures: TouchpadGestures, modifier: Modifier) {
         Text(
             "Move with one finger\nTap to click · two fingers to scroll",
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
     }

@@ -20,6 +20,9 @@ import androidx.compose.ui.unit.sp
  * Scandinavian: warm off-whites and soft greys instead of pure white and black, one quiet
  * accent, flat surfaces separated by tone rather than shadow, light type with generous
  * spacing, and nothing on screen that doesn't do a job.
+ *
+ * Quiet doesn't mean faint: every text pairing here clears WCAG AA (4.5:1), so secondary
+ * text uses darker tones rather than transparency.
  */
 
 private object Palette {
@@ -27,16 +30,16 @@ private object Palette {
     val Birch = Color(0xFFEDE9E3)       // touchpad and fields
     val Oat = Color(0xFFE2DCD3)         // hairlines, pressed surfaces
     val Charcoal = Color(0xFF2E2D2B)    // text, never pure black
-    val Stone = Color(0xFF77726B)       // secondary text
-    val Fjord = Color(0xFF5B7A8C)       // the one accent
+    val Stone = Color(0xFF625D57)       // secondary text
+    val Fjord = Color(0xFF4E6B7C)       // the one accent
     val Moss = Color(0xFF7D9478)        // connected
-    val Clay = Color(0xFFB0614A)        // errors, muted
+    val Clay = Color(0xFFA0553F)        // errors, muted
 
     val Night = Color(0xFF1C1D1B)
     val Slate = Color(0xFF262725)
     val Graphite = Color(0xFF34352F)
     val Bone = Color(0xFFE9E5DF)
-    val Ash = Color(0xFF9E9990)
+    val Ash = Color(0xFFA6A197)
     val FjordLight = Color(0xFF8FAABA)
     val MossLight = Color(0xFF9DB497)
     val ClayLight = Color(0xFFD08A74)

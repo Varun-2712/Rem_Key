@@ -147,7 +147,7 @@ internal fun QuietField(
     TextField(
         value = value,
         onValueChange = onValueChange,
-        placeholder = { Text(placeholder, color = colors.onSurfaceVariant.copy(alpha = 0.7f)) },
+        placeholder = { Text(placeholder, color = colors.onSurfaceVariant) },
         singleLine = singleLine,
         keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = imeAction, autoCorrectEnabled = autoCorrect),
         keyboardActions = keyboardActions,

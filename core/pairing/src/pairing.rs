@@ -1,83 +1,159 @@
-use crate::identity::{DeviceIdentity, PairingInfo};
-use pir_protocol::events::CapabilitySet;
-use anyhow::Result;
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use ed25519_dalek::{Verifier, VerifyingKey};
+use std::time::{Duration, Instant};
+use rand::RngCore;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
-mod pubkey_serde {
-    use serde::{Serializer, Deserializer, Deserialize};
-    use ed25519_dalek::VerifyingKey;
-    
-    pub fn serialize<S>(key: &VerifyingKey, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_bytes(key.as_bytes())
-    }
-    
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<VerifyingKey, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let bytes: Vec<u8> = Vec::deserialize(deserializer)?;
-        let arr: [u8; 32] = bytes.try_into().map_err(|_| serde::de::Error::custom("Invalid key length"))?;
-        VerifyingKey::from_bytes(&arr).map_err(serde::de::Error::custom)
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct TrustedDevice {
-    pub device_id: String,
-    #[serde(with = "pubkey_serde")]
-    pub public_key: ed25519_dalek::VerifyingKey,
+/// What the agent shows as a QR code while pairing is open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairingInfo {
+    pub version: u32,
+    /// Human-readable name of the desktop.
     pub name: String,
-    pub paired_at: chrono::DateTime<chrono::Utc>,
-    pub capabilities: CapabilitySet,
+    /// `ip:port` addresses the phone can try, most likely first.
+    pub endpoints: Vec<String>,
+    /// Hex SHA-256 of the agent's certificate, which the phone pins.
+    pub cert_fingerprint: String,
+    /// One-time secret proving the phone saw this QR code.
+    pub secret: String,
 }
 
-pub struct PairingManager {
-    local_identity: DeviceIdentity,
-    trusted_devices: std::collections::HashMap<String, TrustedDevice>,
+impl PairingInfo {
+    pub const VERSION: u32 = 2;
+
+    pub fn to_json(&self) -> anyhow::Result<String> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    pub fn from_json(json: &str) -> anyhow::Result<Self> {
+        let info: Self = serde_json::from_str(json)?;
+        anyhow::ensure!(info.version == Self::VERSION, "unsupported pairing QR version {}", info.version);
+        Ok(info)
+    }
 }
 
-impl PairingManager {
-    pub fn new(local_identity: DeviceIdentity) -> Self {
-        Self {
-            local_identity,
-            trusted_devices: std::collections::HashMap::new(),
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum PairingError {
+    #[error("pairing is not open")]
+    Closed,
+    #[error("pairing window expired")]
+    Expired,
+    #[error("pairing secret already used")]
+    AlreadyUsed,
+    #[error("wrong pairing secret")]
+    WrongSecret,
+    #[error("too many wrong pairing secrets; pairing closed")]
+    TooManyAttempts,
+}
+
+/// A time-limited, single-use pairing secret.
+#[derive(Debug)]
+pub struct PairingWindow {
+    secret: String,
+    expires_at: Instant,
+    used: bool,
+    failures: u32,
+}
+
+impl PairingWindow {
+    pub const DEFAULT_DURATION: Duration = Duration::from_secs(120);
+    /// The secret is 128 random bits, so guessing is hopeless anyway; this bounds noise
+    /// from a misbehaving client.
+    const MAX_FAILURES: u32 = 5;
+
+    pub fn open(duration: Duration) -> Self {
+        let mut bytes = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        Self { secret: hex::encode(bytes), expires_at: Instant::now() + duration, used: false, failures: 0 }
+    }
+
+    pub fn secret(&self) -> &str {
+        &self.secret
+    }
+
+    pub fn remaining(&self, now: Instant) -> Duration {
+        self.expires_at.saturating_duration_since(now)
+    }
+
+    pub fn is_open(&self, now: Instant) -> bool {
+        !self.used && self.failures < Self::MAX_FAILURES && now < self.expires_at
+    }
+
+    /// Consumes the secret if `presented` matches and the window is still open.
+    pub fn redeem(&mut self, presented: &str, now: Instant) -> Result<(), PairingError> {
+        if self.used {
+            return Err(PairingError::AlreadyUsed);
         }
-    }
-
-    pub fn generate_pairing_qr(&self, endpoint: String, name: String, capabilities: CapabilitySet) -> PairingInfo {
-        PairingInfo {
-            version: 1,
-            device_id: self.local_identity.device_id(),
-            public_key: self.local_identity.public_key_b64(),
-            endpoint,
-            name,
-            capabilities: crate::capabilities::capability_to_string(capabilities),
+        if self.failures >= Self::MAX_FAILURES {
+            return Err(PairingError::TooManyAttempts);
         }
+        if now >= self.expires_at {
+            return Err(PairingError::Expired);
+        }
+        if !constant_time_eq(presented.as_bytes(), self.secret.as_bytes()) {
+            self.failures += 1;
+            return Err(if self.failures >= Self::MAX_FAILURES { PairingError::TooManyAttempts } else { PairingError::WrongSecret });
+        }
+        self.used = true;
+        Ok(())
+    }
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secret_works_once() {
+        let mut w = PairingWindow::open(Duration::from_secs(60));
+        let secret = w.secret().to_string();
+        let now = Instant::now();
+        assert_eq!(w.redeem(&secret, now), Ok(()));
+        assert_eq!(w.redeem(&secret, now), Err(PairingError::AlreadyUsed));
+        assert!(!w.is_open(now));
     }
 
-    pub fn verify_pairing(&self, pairing_info: &PairingInfo, signature: &ed25519_dalek::Signature, challenge: &[u8]) -> Result<bool> {
-        let public_key_bytes = BASE64_STANDARD.decode(&pairing_info.public_key)?;
-        let public_key = VerifyingKey::from_bytes(&public_key_bytes[..].try_into().map_err(|_| anyhow::anyhow!("Invalid key length"))?)?;
-        Ok(public_key.verify(challenge, signature).is_ok())
+    #[test]
+    fn expired_window_rejects_correct_secret() {
+        let mut w = PairingWindow::open(Duration::from_secs(60));
+        let secret = w.secret().to_string();
+        assert_eq!(w.redeem(&secret, Instant::now() + Duration::from_secs(61)), Err(PairingError::Expired));
     }
 
-    pub fn add_trusted_device(&mut self, device: TrustedDevice) {
-        self.trusted_devices.insert(device.device_id.clone(), device);
+    #[test]
+    fn wrong_secrets_close_the_window() {
+        let mut w = PairingWindow::open(Duration::from_secs(60));
+        let secret = w.secret().to_string();
+        let now = Instant::now();
+        for _ in 0..4 {
+            assert_eq!(w.redeem("nope", now), Err(PairingError::WrongSecret));
+        }
+        assert_eq!(w.redeem("nope", now), Err(PairingError::TooManyAttempts));
+        assert_eq!(w.redeem(&secret, now), Err(PairingError::TooManyAttempts));
     }
 
-    pub fn is_trusted(&self, device_id: &str) -> bool {
-        self.trusted_devices.contains_key(device_id)
+    #[test]
+    fn secrets_are_random_and_long() {
+        let a = PairingWindow::open(Duration::from_secs(1));
+        let b = PairingWindow::open(Duration::from_secs(1));
+        assert_ne!(a.secret(), b.secret());
+        assert_eq!(a.secret().len(), 32);
     }
 
-    pub fn get_trusted(&self, device_id: &str) -> Option<&TrustedDevice> {
-        self.trusted_devices.get(device_id)
-    }
-
-    pub fn local_identity(&self) -> &DeviceIdentity {
-        &self.local_identity
+    #[test]
+    fn qr_json_round_trips_and_checks_version() {
+        let info = PairingInfo {
+            version: PairingInfo::VERSION,
+            name: "desk".into(),
+            endpoints: vec!["192.168.1.5:8080".into()],
+            cert_fingerprint: "ab".repeat(32),
+            secret: "s".into(),
+        };
+        assert_eq!(PairingInfo::from_json(&info.to_json().unwrap()).unwrap(), info);
+        let old = info.to_json().unwrap().replace("\"version\":2", "\"version\":1");
+        assert!(PairingInfo::from_json(&old).is_err());
     }
 }

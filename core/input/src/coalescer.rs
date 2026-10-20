@@ -113,6 +113,14 @@ impl TouchCoalescer {
     pub fn flush(&mut self) -> Option<InputEvent> {
         self.emit_pending()
     }
+
+    /// Forgets the current touch and any movement not yet emitted, e.g. when what looked
+    /// like a pan turns out to be a tap.
+    pub fn discard(&mut self) {
+        self.tracker = None;
+        self.remainder = (0.0, 0.0);
+        self.pending = (0, 0);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

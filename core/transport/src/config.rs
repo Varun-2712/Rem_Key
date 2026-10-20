@@ -16,8 +16,10 @@ impl Default for QuicConfig {
         Self {
             bind_addr: "0.0.0.0:8080".parse().unwrap(),
             connect_timeout: Duration::from_secs(10),
-            idle_timeout: Duration::from_secs(30),
-            keep_alive_interval: Duration::from_secs(5),
+            // A phone that vanishes mid-keypress is detected (and its keys released by the
+            // agent) after this long. Keep-alives every 2 s keep a healthy idle link up.
+            idle_timeout: Duration::from_secs(10),
+            keep_alive_interval: Duration::from_secs(2),
             max_frame_size: 64 * 1024,
             max_concurrent_streams: 100,
         }

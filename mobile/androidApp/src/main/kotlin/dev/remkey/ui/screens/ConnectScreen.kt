@@ -19,24 +19,28 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import dev.remkey.domain.model.DesktopTarget
+import dev.remkey.pairing.PairingQrScanner
+import dev.remkey.pairing.ScanResult
 import dev.remkey.relay.RelayConnectionState
 import dev.remkey.ui.theme.RemKeyTheme
 import dev.remkey.ui.theme.Space
 
 /**
- * Connects to the paired computer, or pairs a new one. Until the camera scanner lands,
- * the pairing code is pasted: the agent prints it as "Pairing data" next to the QR code.
+ * Connects to the paired computer, or pairs a new one by scanning the QR code the agent
+ * shows with `--pair`. The same code can be pasted: the agent prints it as "Pairing data".
  */
 @Composable
 fun ConnectScreen(
@@ -48,6 +52,10 @@ fun ConnectScreen(
 ) {
     var pairingNew by rememberSaveable { mutableStateOf(false) }
     var code by rememberSaveable { mutableStateOf("") }
+    var scanError by rememberSaveable { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    // A newly paired computer replaces the old one; show it rather than the pairing form.
+    LaunchedEffect(desktop) { pairingNew = false }
     val connecting = state == RelayConnectionState.Connecting
     val showPairing = desktop == null || pairingNew
 
@@ -84,13 +92,27 @@ fun ConnectScreen(
                 Text("Pair a different computer", style = MaterialTheme.typography.labelLarge)
             }
         } else {
-            SectionLabel("PAIRING CODE")
+            SectionLabel("PAIR")
             Spacer(Modifier.height(Space.s))
             Text(
-                "On the computer, start the agent with --pair and paste the line after \u201cPairing data\u201d.",
+                "On the computer, start the agent with --pair, then scan the code it shows.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Spacer(Modifier.height(Space.l))
+            PrimaryButton(if (connecting) "Pairing…" else "Scan QR code", enabled = !connecting) {
+                scanError = null
+                PairingQrScanner.scan(context) { result ->
+                    when (result) {
+                        is ScanResult.Scanned -> onPair(result.text)
+                        is ScanResult.Failed -> scanError = result.message
+                        ScanResult.Cancelled -> Unit
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(Space.xl))
+            SectionLabel("OR PASTE THE PAIRING DATA")
             Spacer(Modifier.height(Space.s))
             QuietField(
                 value = code,
@@ -101,12 +123,10 @@ fun ConnectScreen(
                 singleLine = false,
                 modifier = Modifier.fillMaxWidth(),
             )
-            Spacer(Modifier.height(Space.xl))
-            PrimaryButton(
-                if (connecting) "Pairing…" else "Pair",
-                enabled = !connecting && code.isNotBlank(),
-                onClick = { onPair(code) },
-            )
+            Spacer(Modifier.height(Space.s))
+            TextButton(onClick = { onPair(code) }, enabled = !connecting && code.isNotBlank()) {
+                Text("Pair with pasted code", style = MaterialTheme.typography.labelLarge)
+            }
             if (desktop != null) {
                 Spacer(Modifier.height(Space.s))
                 TextButton(onClick = { pairingNew = false }, enabled = !connecting) {
@@ -115,7 +135,7 @@ fun ConnectScreen(
             }
         }
 
-        val error = pairingCodeError.takeIf { showPairing } ?: (state as? RelayConnectionState.Failed)?.message
+        val error = (scanError ?: pairingCodeError).takeIf { showPairing } ?: (state as? RelayConnectionState.Failed)?.message
         if (error != null) {
             Spacer(Modifier.height(Space.m))
             Text(error, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)

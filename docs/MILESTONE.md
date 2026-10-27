@@ -150,7 +150,7 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
 - [x] QUIC client integration
 - [ ] First build on a machine with the Android SDK/NDK, then on a real phone
 - [x] mTLS client identity: persistent phone certificate, pairing via the agent's pairing code, reconnect as a trusted device
-- [ ] Scan the pairing QR code with the camera (pasting the printed pairing data works meanwhile)
+- [x] Scan the pairing QR code (Google code scanner, no camera permission; pasting the printed pairing data still works)
 - [ ] Keep the phone key in Android Keystore instead of an app-private file
 
 ### Cross-Platform

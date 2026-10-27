@@ -7,6 +7,8 @@ androidx-core = "1.13.1"
 androidx-activity = "1.9.3"
 androidx-lifecycle = "2.8.7"
 compose-bom = "2024.10.01"
+code-scanner = "16.1.0"
+play-services-tasks = "18.2.0"
 # Rust is compiled with this NDK through cargo-ndk; AGP installs it if it's missing.
 ndk = "27.2.12479018"
 compileSdk = "35"
@@ -20,6 +22,9 @@ androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidx
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidx-activity" }
 androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "androidx-lifecycle" }
 androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "androidx-lifecycle" }
+# Google code scanner: Play services owns the camera UI, so the app needs no camera permission.
+play-services-code-scanner = { module = "com.google.android.gms:play-services-code-scanner", version.ref = "code-scanner" }
+play-services-tasks = { module = "com.google.android.gms:play-services-tasks", version.ref = "play-services-tasks" }
 compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
 compose-ui = { module = "androidx.compose.ui:ui" }
 compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }

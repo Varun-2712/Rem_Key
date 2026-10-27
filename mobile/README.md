@@ -44,11 +44,11 @@ Gradle properties you can override in `~/.gradle/gradle.properties` or with `-P`
 
 ## Try it
 
-1. Start the desktop agent with `--pair`. Next to the QR code it prints a `Pairing data: {...}` line.
-2. In the app, paste that JSON into the pairing code field and tap Pair. The desktop saves the phone as trusted, and the app remembers the desktop.
+1. Start the desktop agent with `--pair`. It shows a QR code and prints the same content as a `Pairing data: {...}` line.
+2. In the app, tap Scan QR code. The desktop saves the phone as trusted, and the app remembers the desktop. Without Google Play services (some emulators), paste the pairing data instead.
 3. Later, tap Connect; no secret is needed again. `pir-agent --forget <prefix>` revokes the phone, after which it has to pair again.
 
-The phone's certificate and key live in the app's `noBackupFilesDir`, so they are never restored onto another device. Scanning the QR code with the camera and mDNS discovery are still to come.
+The phone's certificate and key live in the app's `noBackupFilesDir`, so they are never restored onto another device. Scanning uses Google's code scanner, so the app needs no camera permission. mDNS discovery is still to come.
 
 ## Testing without a phone
 

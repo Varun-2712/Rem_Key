@@ -29,11 +29,13 @@ class MainActivity : ComponentActivity() {
             RemKeyTheme {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     val state by relay.state.collectAsStateWithLifecycle()
+                    val desktop by relay.pairedDesktop.collectAsStateWithLifecycle()
+                    val codeError by relay.pairingCodeError.collectAsStateWithLifecycle()
                     Box(Modifier.safeDrawingPadding()) {
                         Crossfade(targetState = state == RelayConnectionState.Connected, label = "screen") { connected ->
                             if (connected) {
                                 TouchpadScreen(
-                                    desktopLabel = relay.lastTarget?.label.orEmpty(),
+                                    desktopLabel = desktop?.label.orEmpty(),
                                     gestures = relay.gestures,
                                     onCommand = relay::send,
                                     onDisconnect = relay::disconnect,
@@ -41,8 +43,10 @@ class MainActivity : ComponentActivity() {
                             } else {
                                 ConnectScreen(
                                     state = state,
-                                    initial = relay.lastTarget,
+                                    desktop = desktop,
+                                    pairingCodeError = codeError,
                                     onConnect = relay::connect,
+                                    onPair = relay::pair,
                                 )
                             }
                         }

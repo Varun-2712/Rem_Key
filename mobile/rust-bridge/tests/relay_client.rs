@@ -4,7 +4,9 @@
 use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 
-use pir_mobile::{ConnectionState, PointerButton, RelayClient, RelayError, RelayListener, SpecialKey};
+use std::sync::Arc;
+
+use pir_mobile::{ConnectionState, DesktopTarget, PointerButton, RelayClient, RelayError, RelayListener, SpecialKey};
 use pir_protocol::events::{
     ButtonState, CapabilitySet, DisconnectReason, EventMetadata, InputEvent, KeyCode, MouseButton,
     ProtocolVersion, SessionEventType,
@@ -21,6 +23,16 @@ impl RelayListener for ChannelListener {
     fn on_state_changed(&self, state: ConnectionState) {
         let _ = self.0.send(state);
     }
+}
+
+/// A client with a fresh identity. The directory must outlive it only until it is built.
+fn new_client() -> Arc<RelayClient> {
+    let dir = tempfile::tempdir().unwrap();
+    RelayClient::new(dir.path().to_string_lossy().into_owned()).unwrap()
+}
+
+fn target(endpoint: impl Into<String>, fingerprint: String) -> DesktopTarget {
+    DesktopTarget { name: "test desk".into(), endpoints: vec![endpoint.into()], fingerprint }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -68,9 +80,9 @@ async fn sends_input_and_releases_held_state_on_disconnect() {
     let fingerprint = hex(&server.cert_fingerprint());
     let accept = tokio::spawn(accept_and_handshake(server));
 
-    let client = RelayClient::new();
+    let client = new_client();
     let (tx, states) = std_mpsc::channel();
-    client.connect("127.0.0.1".into(), addr.port(), fingerprint, Box::new(ChannelListener(tx))).unwrap();
+    client.connect(target(addr.to_string(), fingerprint), Box::new(ChannelListener(tx))).unwrap();
     let mut conn = accept.await.unwrap();
     tokio::task::spawn_blocking(move || {
         wait_for(&states, |s| *s == ConnectionState::Connected);
@@ -128,9 +140,9 @@ async fn wrong_fingerprint_reports_failure() {
     let addr = server.local_addr().unwrap();
     let _accept = tokio::spawn(accept_and_handshake(server));
 
-    let client = RelayClient::new();
+    let client = new_client();
     let (tx, states) = std_mpsc::channel();
-    client.connect("127.0.0.1".into(), addr.port(), "00".repeat(32), Box::new(ChannelListener(tx))).unwrap();
+    client.connect(target(addr.to_string(), "00".repeat(32)), Box::new(ChannelListener(tx))).unwrap();
     let state = tokio::task::spawn_blocking(move || {
         wait_for(&states, |s| !matches!(s, ConnectionState::Connecting))
     })
@@ -142,15 +154,15 @@ async fn wrong_fingerprint_reports_failure() {
 
 #[test]
 fn rejects_bad_connection_details() {
-    let client = RelayClient::new();
+    let client = new_client();
     let (tx, _states) = std_mpsc::channel();
     let fp = "ab".repeat(32);
     assert!(matches!(
-        client.connect("not a host".into(), 8080, fp, Box::new(ChannelListener(tx.clone()))),
+        client.connect(target("not a host", fp), Box::new(ChannelListener(tx.clone()))),
         Err(RelayError::InvalidAddress { .. })
     ));
     assert!(matches!(
-        client.connect("127.0.0.1".into(), 8080, "abcd".into(), Box::new(ChannelListener(tx))),
+        client.connect(target("127.0.0.1:8080", "abcd".into()), Box::new(ChannelListener(tx))),
         Err(RelayError::InvalidFingerprint { .. })
     ));
 }

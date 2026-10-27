@@ -5,9 +5,11 @@
 mod client;
 mod commands;
 mod errors;
+mod pairing;
 
 pub use client::{ConnectionState, RelayClient, RelayListener};
 pub use commands::{PointerButton, SpecialKey};
 pub use errors::RelayError;
+pub use pairing::{parse_pairing_code, DesktopTarget, PairingCode};
 
 uniffi::setup_scaffolding!();

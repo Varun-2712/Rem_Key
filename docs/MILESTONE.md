@@ -147,9 +147,11 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
 - [x] UniFFI bindings generation and cargo-ndk build wired into Gradle
 - [x] Touchpad UI (shared `TouchpadGestures`: move, tap/two-finger tap, natural two-finger scroll)
 - [x] Keyboard UI (committed text + editing keys)
-- [x] QUIC client integration (manual host/port/fingerprint until pairing lands)
+- [x] QUIC client integration
 - [ ] First build on a machine with the Android SDK/NDK, then on a real phone
-- [ ] mTLS client identity once `feature/pairing-auth` merges
+- [x] mTLS client identity: persistent phone certificate, pairing via the agent's pairing code, reconnect as a trusted device
+- [ ] Scan the pairing QR code with the camera (pasting the printed pairing data works meanwhile)
+- [ ] Keep the phone key in Android Keystore instead of an app-private file
 
 ### Cross-Platform
 - [ ] macOS (`CGEvent` adapter)

@@ -5,6 +5,7 @@ import dev.remkey.bridge.RelayException
 import dev.remkey.bridge.RelayListener
 import dev.remkey.bridge.SpecialKey
 import dev.remkey.domain.model.DesktopTarget
+import dev.remkey.domain.model.PairingCode
 import dev.remkey.relay.EditingKey
 import dev.remkey.relay.PointerButton
 import dev.remkey.relay.RelayClient
@@ -13,12 +14,19 @@ import dev.remkey.relay.RelayConnectionState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import dev.remkey.bridge.DesktopTarget as NativeTarget
+import dev.remkey.bridge.PairingCode as NativeCode
 import dev.remkey.bridge.PointerButton as NativeButton
 import dev.remkey.bridge.RelayClient as NativeRelayClient
+import dev.remkey.bridge.parsePairingCode as nativeParsePairingCode
 
-/** [RelayClient] over the Rust bridge (`libpir_mobile.so`, loaded by JNA on first use). */
-class AndroidRelayClient : RelayClient {
-    private val native = NativeRelayClient()
+/**
+ * [RelayClient] over the Rust bridge (`libpir_mobile.so`, loaded by JNA on first use).
+ * [dataDir] holds this phone's certificate and key; use app-private storage that isn't
+ * backed up, so the identity never moves to another device.
+ */
+class AndroidRelayClient(dataDir: String) : RelayClient {
+    private val native = NativeRelayClient(dataDir)
     private val _state = MutableStateFlow<RelayConnectionState>(RelayConnectionState.Disconnected)
     override val state: StateFlow<RelayConnectionState> = _state.asStateFlow()
 
@@ -34,9 +42,25 @@ class AndroidRelayClient : RelayClient {
         }
     }
 
+    override val deviceFingerprint: String = native.deviceFingerprint()
+
+    override fun parsePairingCode(text: String): Result<PairingCode> = try {
+        Result.success(nativeParsePairingCode(text).toCommon())
+    } catch (e: RelayException) {
+        Result.failure(IllegalArgumentException(e.describe()))
+    }
+
     override fun connect(target: DesktopTarget) {
         try {
-            native.connect(target.host.trim(), target.port.toUShort(), target.fingerprint, listener)
+            native.connect(target.toNative(), listener)
+        } catch (e: RelayException) {
+            _state.value = RelayConnectionState.Failed(e.describe())
+        }
+    }
+
+    override fun pair(code: PairingCode, deviceName: String) {
+        try {
+            native.pair(NativeCode(code.desktop.toNative(), code.secret), deviceName, listener)
         } catch (e: RelayException) {
             _state.value = RelayConnectionState.Failed(e.describe())
         }
@@ -65,12 +89,20 @@ class AndroidRelayClient : RelayClient {
 }
 
 private fun RelayException.describe(): String = when (this) {
-    is RelayException.InvalidAddress -> "That address doesn't look right"
-    is RelayException.InvalidFingerprint -> "The fingerprint should be 64 hex characters"
+    is RelayException.InvalidAddress -> "The pairing code has no usable address"
+    is RelayException.InvalidFingerprint -> "The pairing code has a malformed fingerprint"
+    is RelayException.InvalidPairingCode -> "That isn't a Rem Key pairing code"
+    is RelayException.Identity -> "This phone's identity couldn't be loaded"
     is RelayException.AlreadyConnected -> "Already connected"
     is RelayException.NotConnected -> "Not connected"
     is RelayException.QueueFull -> "Connection is stalled"
 }
+
+private fun DesktopTarget.toNative() = NativeTarget(name, endpoints, fingerprint)
+
+private fun NativeTarget.toCommon() = DesktopTarget(name, endpoints, fingerprint)
+
+private fun NativeCode.toCommon() = PairingCode(desktop.toCommon(), secret)
 
 private fun PointerButton.toNative(): NativeButton = when (this) {
     PointerButton.Left -> NativeButton.LEFT

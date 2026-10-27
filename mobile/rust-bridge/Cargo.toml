@@ -13,6 +13,7 @@ pir_protocol = { workspace = true }
 pir_transport = { workspace = true }
 pir_input = { workspace = true }
 pir_session = { workspace = true }
+pir_pairing = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
@@ -22,3 +23,7 @@ uniffi = { workspace = true }
 
 [dev-dependencies]
 pir_protocol = { workspace = true }
+tempfile = "3"
+# The real desktop agent, for the end-to-end pairing tests.
+pir_agent = { path = "../../desktop/windows/agent" }
+pir_input_adapter = { workspace = true }

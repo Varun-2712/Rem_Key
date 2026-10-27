@@ -44,10 +44,11 @@ Gradle properties you can override in `~/.gradle/gradle.properties` or with `-P`
 
 ## Try it
 
-1. Start the desktop agent. It logs its address and certificate fingerprint.
-2. In the app, enter the computer's LAN IP, the port, and the fingerprint, then tap Connect.
+1. Start the desktop agent with `--pair`. Next to the QR code it prints a `Pairing data: {...}` line.
+2. In the app, paste that JSON into the pairing code field and tap Pair. The desktop saves the phone as trusted, and the app remembers the desktop.
+3. Later, tap Connect; no secret is needed again. `pir-agent --forget <prefix>` revokes the phone, after which it has to pair again.
 
-Discovery and QR pairing will replace the manual fields (MVP 2).
+The phone's certificate and key live in the app's `noBackupFilesDir`, so they are never restored onto another device. Scanning the QR code with the camera and mDNS discovery are still to come.
 
 ## Testing without a phone
 
@@ -55,7 +56,7 @@ Discovery and QR pairing will replace the manual fields (MVP 2).
 cargo test -p pir_mobile
 ```
 
-The bridge's integration test runs `RelayClient` against a real QUIC server. It covers the handshake, sub-pixel motion accumulation, event ordering, and releasing held keys and buttons on disconnect. The touchpad gesture tests are in `shared/src/commonTest` and run with `./gradlew :shared:testDebugUnitTest`.
+The bridge's integration test runs `RelayClient` against a real QUIC server. It covers the handshake, sub-pixel motion accumulation, event ordering, and releasing held keys and buttons on disconnect. `tests/pairing.rs` pairs with the real desktop agent, reconnects as the same phone, and checks that unpaired phones and wrong secrets are refused. The touchpad gesture tests are in `shared/src/commonTest` and run with `./gradlew :shared:testDebugUnitTest`.
 
 ## Design
 

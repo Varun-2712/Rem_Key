@@ -4,6 +4,11 @@ pub enum RelayError {
     InvalidAddress { message: String },
     #[error("invalid certificate fingerprint: {message}")]
     InvalidFingerprint { message: String },
+    #[error("invalid pairing code: {message}")]
+    InvalidPairingCode { message: String },
+    /// The phone's own certificate couldn't be loaded or created.
+    #[error("device identity unavailable: {message}")]
+    Identity { message: String },
     #[error("already connected or connecting")]
     AlreadyConnected,
     #[error("not connected")]

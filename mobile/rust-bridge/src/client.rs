@@ -1,13 +1,15 @@
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use pir_input::state::InputStateManager;
+use pir_pairing::identity::StoredIdentity;
 use pir_protocol::events::{
     DisconnectReason, EventMetadata, InputEvent, ProtocolVersion, SessionEventType,
 };
 use pir_session::capabilities::get_default_phone_capabilities;
-use pir_transport::quic::{CertFingerprint, QuicClientTransport};
+use pir_transport::quic::{CertFingerprint, QuicClientTransport, TlsIdentity};
 use pir_transport::InputTransport;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -15,6 +17,7 @@ use uuid::Uuid;
 
 use crate::commands::{Command, PointerButton, SpecialKey};
 use crate::errors::RelayError;
+use crate::pairing::{parse_endpoints, parse_fingerprint, DesktopTarget, PairingCode};
 
 /// Commands waiting for the connection task. Small enough that a stalled network shows up
 /// as dropped pointer deltas quickly instead of a burst of stale movement later.
@@ -23,7 +26,8 @@ const COMMAND_QUEUE_LEN: usize = 256;
 const MAX_BATCH: usize = 64;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
-const GRACEFUL_SHUTDOWN: Duration = Duration::from_secs(1);
+/// How long dropping the client waits for the session to release held input and close.
+const GRACEFUL_SHUTDOWN: Duration = Duration::from_secs(2);
 /// The agent's certificate is pinned by fingerprint, so the name only has to be valid SNI.
 const SERVER_NAME: &str = "localhost";
 
@@ -45,44 +49,45 @@ pub trait RelayListener: Send + Sync {
 pub struct RelayClient {
     runtime: Option<tokio::runtime::Runtime>,
     commands: Mutex<Option<mpsc::Sender<Command>>>,
+    /// The current or last connection task, so dropping the client can let it finish.
+    session: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    identity: Arc<TlsIdentity>,
 }
 
 #[uniffi::export]
 impl RelayClient {
+    /// `data_dir` is app-private storage. The phone's certificate and key are created there
+    /// on first use and reused afterwards: desktops recognise the phone by that certificate,
+    /// so losing it means pairing again.
     #[uniffi::constructor]
-    pub fn new() -> Arc<Self> {
+    pub fn new(data_dir: String) -> Result<Arc<Self>, RelayError> {
+        let identity = load_identity(Path::new(&data_dir))
+            .map_err(|e| RelayError::Identity { message: format!("{e:#}") })?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("pir-relay")
             .enable_all()
             .build()
             .expect("failed to start the relay runtime");
-        Arc::new(Self { runtime: Some(runtime), commands: Mutex::new(None) })
+        Ok(Arc::new(Self { runtime: Some(runtime), commands: Mutex::new(None), session: Mutex::new(None), identity: Arc::new(identity) }))
     }
 
-    /// Start connecting to a desktop agent. Returns immediately; progress is reported
-    /// through `listener`. `fingerprint_hex` is the agent's certificate SHA-256 from pairing.
-    pub fn connect(
-        &self,
-        host: String,
-        port: u16,
-        fingerprint_hex: String,
-        listener: Box<dyn RelayListener>,
-    ) -> Result<(), RelayError> {
-        let addr: SocketAddr = format!("{host}:{port}")
-            .parse()
-            .or_else(|_| format!("[{host}]:{port}").parse())
-            .map_err(|_| RelayError::InvalidAddress { message: format!("{host}:{port}") })?;
-        let fingerprint = parse_fingerprint(&fingerprint_hex)?;
+    /// This phone's certificate fingerprint, hex. The agent's `--list-devices` shows it.
+    pub fn device_fingerprint(&self) -> String {
+        pir_pairing::fingerprint_hex(&self.identity.fingerprint())
+    }
 
-        let mut commands = self.commands.lock().unwrap();
-        if commands.as_ref().is_some_and(|tx| !tx.is_closed()) {
-            return Err(RelayError::AlreadyConnected);
-        }
-        let (tx, rx) = mpsc::channel(COMMAND_QUEUE_LEN);
-        *commands = Some(tx);
-        self.runtime().spawn(run_session(addr, fingerprint, rx, Arc::from(listener)));
-        Ok(())
+    /// Start connecting to a desktop this phone is already paired with. Returns immediately;
+    /// progress is reported through `listener`.
+    pub fn connect(&self, target: DesktopTarget, listener: Box<dyn RelayListener>) -> Result<(), RelayError> {
+        self.start(&target, None, listener)
+    }
+
+    /// Like `connect`, but first presents the pairing code's secret so the desktop trusts this
+    /// phone from now on. `device_name` is how the phone is listed on the desktop.
+    pub fn pair(&self, code: PairingCode, device_name: String, listener: Box<dyn RelayListener>) -> Result<(), RelayError> {
+        let pairing = Pairing { secret: code.secret, device_name };
+        self.start(&code.desktop, Some(pairing), listener)
     }
 
     /// Releases anything still held on the desktop, then closes the connection.
@@ -119,6 +124,25 @@ impl RelayClient {
 }
 
 impl RelayClient {
+    fn start(
+        &self,
+        target: &DesktopTarget,
+        pairing: Option<Pairing>,
+        listener: Box<dyn RelayListener>,
+    ) -> Result<(), RelayError> {
+        let peer = Peer { endpoints: parse_endpoints(&target.endpoints)?, fingerprint: parse_fingerprint(&target.fingerprint)? };
+
+        let mut commands = self.commands.lock().unwrap();
+        if commands.as_ref().is_some_and(|tx| !tx.is_closed()) {
+            return Err(RelayError::AlreadyConnected);
+        }
+        let (tx, rx) = mpsc::channel(COMMAND_QUEUE_LEN);
+        *commands = Some(tx);
+        let task = self.runtime().spawn(run_session(peer, self.identity.clone(), pairing, rx, Arc::from(listener)));
+        *self.session.lock().unwrap() = Some(task);
+        Ok(())
+    }
+
     fn runtime(&self) -> &tokio::runtime::Runtime {
         self.runtime.as_ref().expect("runtime is only taken on drop")
     }
@@ -143,39 +167,50 @@ impl RelayClient {
 }
 
 impl Drop for RelayClient {
+    /// Must not run on an async runtime thread (it blocks); Kotlin calls it from `close()`.
     fn drop(&mut self) {
-        // Give the session task a moment to release held keys before the runtime goes away.
         if let Some(tx) = self.commands.get_mut().unwrap().take() {
             let _ = tx.try_send(Command::Disconnect);
         }
-        if let Some(runtime) = self.runtime.take() {
-            runtime.shutdown_timeout(GRACEFUL_SHUTDOWN);
+        let Some(runtime) = self.runtime.take() else { return };
+        // Shutting the runtime down cancels tasks at their next await, which would cut off the
+        // key releases and the Disconnect; without the Disconnect the desktop keeps the old
+        // session open and won't take this phone back until it times out.
+        if let Some(session) = self.session.get_mut().unwrap().take() {
+            let _ = runtime.block_on(tokio::time::timeout(GRACEFUL_SHUTDOWN, session));
         }
+        runtime.shutdown_timeout(Duration::from_millis(100));
     }
 }
 
-fn parse_fingerprint(hex: &str) -> Result<CertFingerprint, RelayError> {
-    let hex: String = hex.chars().filter(|c| !c.is_whitespace() && *c != ':').collect();
-    if hex.len() != 64 {
-        return Err(RelayError::InvalidFingerprint { message: "expected 64 hex characters".into() });
-    }
-    let mut out = [0u8; 32];
-    for (i, byte) in out.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
-            .map_err(|_| RelayError::InvalidFingerprint { message: "not hexadecimal".into() })?;
-    }
-    Ok(out)
+fn load_identity(dir: &Path) -> anyhow::Result<TlsIdentity> {
+    std::fs::create_dir_all(dir)?;
+    let stored = StoredIdentity::load_or_create(dir, || TlsIdentity::generate().map(|id| id.to_der()))?;
+    Ok(TlsIdentity::from_der(stored.cert_der, stored.key_der))
+}
+
+/// Where a desktop is and the certificate it must present.
+struct Peer {
+    endpoints: Vec<SocketAddr>,
+    fingerprint: CertFingerprint,
+}
+
+/// Sent once, before Hello, to a desktop that doesn't know this phone yet.
+struct Pairing {
+    secret: String,
+    device_name: String,
 }
 
 async fn run_session(
-    addr: SocketAddr,
-    fingerprint: CertFingerprint,
+    peer: Peer,
+    identity: Arc<TlsIdentity>,
+    pairing: Option<Pairing>,
     mut commands: mpsc::Receiver<Command>,
     listener: Arc<dyn RelayListener>,
 ) {
     listener.on_state_changed(ConnectionState::Connecting);
-    let final_state = match establish(addr, fingerprint).await {
-        Ok((mut conn, session_id)) => {
+    let final_state = match establish(&peer, &identity, pairing.as_ref()).await {
+        Ok((mut conn, addr, session_id)) => {
             info!("connected to {addr}, session {session_id}");
             listener.on_state_changed(ConnectionState::Connected);
             let mut session = Session::new(session_id);
@@ -189,13 +224,51 @@ async fn run_session(
         Err(e) => ConnectionState::Failed { message: e.to_string() },
     };
     if let ConnectionState::Failed { message } = &final_state {
-        warn!("relay session to {addr} ended: {message}");
+        warn!("relay session ended: {message}");
     }
     listener.on_state_changed(final_state);
 }
 
-async fn establish(addr: SocketAddr, fingerprint: CertFingerprint) -> anyhow::Result<(QuicClientTransport, Uuid)> {
-    let mut conn = QuicClientTransport::connect(addr, SERVER_NAME, fingerprint).await?;
+/// Connects to the first endpoint that answers, pairs if asked to, then says Hello.
+async fn establish(
+    peer: &Peer,
+    identity: &TlsIdentity,
+    pairing: Option<&Pairing>,
+) -> anyhow::Result<(QuicClientTransport, SocketAddr, Uuid)> {
+    let mut last_error = None;
+    for &addr in &peer.endpoints {
+        match QuicClientTransport::connect(addr, SERVER_NAME, peer.fingerprint, identity).await {
+            Ok(mut conn) => {
+                if let Some(pairing) = pairing {
+                    request_pairing(&mut conn, pairing).await?;
+                }
+                let session_id = hello(&mut conn).await?;
+                return Ok((conn, addr, session_id));
+            }
+            Err(e) => {
+                warn!("could not reach {addr}: {e:#}");
+                last_error = Some(e);
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no desktop address")))
+}
+
+async fn request_pairing(conn: &mut QuicClientTransport, pairing: &Pairing) -> anyhow::Result<()> {
+    conn.send_reliable(&InputEvent::SessionEvent {
+        metadata: EventMetadata::new(Uuid::nil(), 0),
+        event: SessionEventType::PairRequest { secret: pairing.secret.clone(), device_name: pairing.device_name.clone() },
+    })
+    .await?;
+    match next_session_event(conn).await? {
+        SessionEventType::PairResult { accepted: true } => Ok(()),
+        SessionEventType::PairResult { accepted: false } => anyhow::bail!("the desktop refused the pairing"),
+        SessionEventType::Disconnect { reason } => Err(refused(reason)),
+        other => anyhow::bail!("unexpected reply to pairing: {other:?}"),
+    }
+}
+
+async fn hello(conn: &mut QuicClientTransport) -> anyhow::Result<Uuid> {
     conn.send_reliable(&InputEvent::SessionEvent {
         metadata: EventMetadata::new(Uuid::nil(), 0),
         event: SessionEventType::Hello {
@@ -206,15 +279,31 @@ async fn establish(addr: SocketAddr, fingerprint: CertFingerprint) -> anyhow::Re
     .await?;
     match tokio::time::timeout(HANDSHAKE_TIMEOUT, conn.recv()).await {
         Ok(Ok(InputEvent::SessionEvent { metadata, event: SessionEventType::HelloAck { .. } })) => {
-            let session_id = if metadata.session_id.is_nil() { Uuid::new_v4() } else { metadata.session_id };
-            Ok((conn, session_id))
+            Ok(if metadata.session_id.is_nil() { Uuid::new_v4() } else { metadata.session_id })
         }
-        Ok(Ok(InputEvent::SessionEvent { event: SessionEventType::Disconnect { reason }, .. })) => {
-            anyhow::bail!("desktop refused the connection: {reason:?}")
-        }
+        Ok(Ok(InputEvent::SessionEvent { event: SessionEventType::Disconnect { reason }, .. })) => Err(refused(reason)),
         Ok(Ok(other)) => anyhow::bail!("unexpected handshake reply: {other:?}"),
         Ok(Err(e)) => Err(e),
         Err(_) => anyhow::bail!("desktop did not answer the handshake"),
+    }
+}
+
+async fn next_session_event(conn: &mut QuicClientTransport) -> anyhow::Result<SessionEventType> {
+    loop {
+        match tokio::time::timeout(HANDSHAKE_TIMEOUT, conn.recv()).await {
+            Ok(Ok(InputEvent::SessionEvent { event, .. })) => return Ok(event),
+            Ok(Ok(_)) => continue,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => anyhow::bail!("desktop did not answer"),
+        }
+    }
+}
+
+fn refused(reason: DisconnectReason) -> anyhow::Error {
+    match reason {
+        // The agent only admits phones in its trust store, or ones presenting a live pairing secret.
+        DisconnectReason::AuthFailed => anyhow::anyhow!("the desktop doesn't trust this phone; pair it again"),
+        reason => anyhow::anyhow!("desktop refused the connection: {reason:?}"),
     }
 }
 
@@ -388,13 +477,4 @@ mod tests {
         assert_eq!(acc.take_whole(), Some((1, 0)));
     }
 
-    #[test]
-    fn fingerprint_accepts_colons_and_rejects_bad_input() {
-        let hex = "ab".repeat(32);
-        assert_eq!(parse_fingerprint(&hex).unwrap(), [0xab; 32]);
-        let colons = vec!["AB"; 32].join(":");
-        assert_eq!(parse_fingerprint(&colons).unwrap(), [0xab; 32]);
-        assert!(parse_fingerprint("abcd").is_err());
-        assert!(parse_fingerprint(&"zz".repeat(32)).is_err());
-    }
 }

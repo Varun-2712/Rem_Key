@@ -1,25 +1,45 @@
-mod dispatch;
-
-use clap::Parser;
-use dispatch::Dispatcher;
-use pir_diagnostics::metrics::MetricsCollector;
-use pir_input_adapter::{InputAdapter, PlatformAdapter, DryRunAdapter};
-use pir_protocol::events::{DisconnectReason, EventMetadata, InputEvent, SessionEventType};
-use pir_protocol::version::negotiate_version;
-use pir_session::capabilities::{get_default_desktop_capabilities, negotiate_capabilities};
-use pir_session::heartbeat::heartbeat_ack;
-use pir_transport::quic::{QuicServerConnection, QuicServerTransport};
-use pir_transport::InputTransport;
-use tracing::{error, info, warn};
+use std::path::PathBuf;
+use std::time::Duration;
 use anyhow::Result;
-use std::sync::Arc;
-use uuid::Uuid;
+use clap::Parser;
+use pir_agent::server::{Agent, AgentConfig};
+use pir_input_adapter::{DryRunAdapter, PlatformAdapter};
+use pir_pairing::fsutil::default_data_dir;
+use pir_pairing::trust::TrustStore;
+use tracing::{info, warn};
 
 #[derive(Parser, Debug)]
 #[command(name = "pir-agent", version, about = "Phone Input Relay Desktop Agent")]
 struct Args {
     #[arg(short, long, default_value = "0.0.0.0:8080")]
     bind: String,
+
+    /// Where the agent keeps its identity and paired devices.
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+
+    /// Name shown on the phone when pairing.
+    #[arg(long)]
+    name: Option<String>,
+
+    /// Address to put in the pairing QR code, if the detected LAN address is wrong.
+    #[arg(long)]
+    advertise: Option<std::net::SocketAddr>,
+
+    /// Show a QR code and accept one new phone for --pair-seconds.
+    #[arg(long)]
+    pair: bool,
+
+    #[arg(long, default_value_t = 120)]
+    pair_seconds: u64,
+
+    /// List paired devices and exit.
+    #[arg(long)]
+    list_devices: bool,
+
+    /// Unpair the device whose fingerprint starts with this (8+ hex characters) and exit.
+    #[arg(long, value_name = "FINGERPRINT_PREFIX")]
+    forget: Option<String>,
 
     /// Log the input that would be injected instead of injecting it.
     #[arg(long)]
@@ -37,125 +57,82 @@ async fn main() -> Result<()> {
         .with_env_filter(if args.verbose { "debug" } else { "info" })
         .init();
 
+    let data_dir = match &args.data_dir {
+        Some(dir) => dir.clone(),
+        None => default_data_dir()?,
+    };
+
+    if args.list_devices || args.forget.is_some() {
+        return manage_devices(&args, &data_dir);
+    }
+
+    let config = AgentConfig {
+        bind: args.bind.parse()?,
+        data_dir,
+        name: args.name.clone().unwrap_or_else(default_name),
+        advertise: args.advertise,
+    };
+    let mut agent = Agent::start(&config).await?;
+    info!("Listening on {} (data in {})", agent.local_addr()?, config.data_dir.display());
+    info!("Certificate fingerprint: {}", pir_pairing::fingerprint_hex(&agent.cert_fingerprint()));
+    info!("{} paired device(s)", agent.trust().list().count());
+
+    if args.pair {
+        let info = agent.open_pairing(Duration::from_secs(args.pair_seconds));
+        let json = info.to_json()?;
+        println!("\nScan with the phone app to pair (valid {} s, one phone):\n", args.pair_seconds);
+        println!("{}", render_qr(&json)?);
+        println!("Pairing data: {json}\n");
+    } else if agent.trust().list().next().is_none() {
+        warn!("No paired devices yet. Run with --pair to pair a phone.");
+    }
+
+    let metrics = agent.metrics();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            metrics.print_summary();
+        }
+    });
+
     if args.dry_run || cfg!(not(windows)) {
         if cfg!(not(windows)) {
             warn!("No native input adapter for this platform yet; running in dry-run mode");
         }
-        run(args, DryRunAdapter::new()?).await
+        agent.run(DryRunAdapter::new()?).await
     } else {
-        run(args, PlatformAdapter::new()?).await
+        agent.run(PlatformAdapter::new()?).await
     }
 }
 
-async fn run<A: InputAdapter>(args: Args, adapter: A) -> Result<()> {
-    let bind_addr: std::net::SocketAddr = args.bind.parse()?;
-    let mut server = QuicServerTransport::bind(bind_addr).await?;
-    info!("Listening on {}", server.local_addr()?);
-    info!("Certificate fingerprint: {}", hex(&server.cert_fingerprint()));
-    warn!("Pairing is not enforced yet: any device that knows the fingerprint can connect");
-
-    let metrics = Arc::new(MetricsCollector::new());
-    let metrics_clone = metrics.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-        interval.tick().await;
-        loop {
-            interval.tick().await;
-            metrics_clone.print_summary();
-        }
-    });
-
-    let mut dispatcher = Dispatcher::new(adapter, Uuid::nil());
-    loop {
-        match server.accept().await {
-            Ok(mut conn) => {
-                let remote = conn.remote_addr().map(|a| a.to_string()).unwrap_or_else(|| "unknown".into());
-                info!("Client connected from {}", remote);
-                dispatcher.reset_session(conn.session_id());
-
-                let reason = serve_connection(&mut conn, &mut dispatcher, &metrics).await;
-                // Whatever ended the session, nothing may stay pressed.
-                dispatcher.release_all();
-                let _ = conn.close().await;
-                info!("Client {} disconnected: {}", remote, reason);
-            }
-            Err(e) => error!("Accept error: {}", e),
-        }
+fn manage_devices(args: &Args, data_dir: &std::path::Path) -> Result<()> {
+    let mut trust = TrustStore::open(data_dir.join(TrustStore::FILE_NAME))?;
+    if let Some(prefix) = &args.forget {
+        let device = trust.remove_by_prefix(prefix)?;
+        println!("Unpaired {} ({})", device.name, device.fingerprint);
+        return Ok(());
     }
+    let mut any = false;
+    for device in trust.list() {
+        any = true;
+        println!("{}  {}  paired {}", &device.fingerprint[..16], device.name, device.paired_at.format("%Y-%m-%d %H:%M"));
+    }
+    if !any {
+        println!("No paired devices.");
+    }
+    Ok(())
 }
 
-/// Runs one session until it ends, returning why it ended.
-async fn serve_connection<A: InputAdapter>(
-    conn: &mut QuicServerConnection,
-    dispatcher: &mut Dispatcher<A>,
-    metrics: &MetricsCollector,
-) -> String {
-    let session_id = conn.session_id();
-    loop {
-        let event = match conn.recv().await {
-            Ok(event) => event,
-            Err(e) => return format!("connection error: {e}"),
-        };
-        metrics.record_packet_received(0);
-
-        if let InputEvent::SessionEvent { event: session_event, .. } = &event {
-            match session_event {
-                SessionEventType::Hello { version, capabilities } => {
-                    let reply = match negotiate_version(*version, pir_protocol::events::ProtocolVersion::CURRENT) {
-                        Ok(negotiated) => {
-                            let caps = negotiate_capabilities(*capabilities, get_default_desktop_capabilities());
-                            info!("Hello from phone: protocol {} capabilities {:?}", negotiated, caps);
-                            Ok(InputEvent::SessionEvent {
-                                metadata: EventMetadata::new(session_id, 0),
-                                event: SessionEventType::HelloAck { version: negotiated, capabilities: caps },
-                            })
-                        }
-                        Err(e) => Err(e),
-                    };
-                    match reply {
-                        Ok(ack) => {
-                            if let Err(e) = conn.send_reliable(&ack).await {
-                                return format!("failed to send HelloAck: {e}");
-                            }
-                        }
-                        Err(e) => {
-                            let _ = conn.send_reliable(&InputEvent::SessionEvent {
-                                metadata: EventMetadata::new(session_id, 0),
-                                event: SessionEventType::Disconnect { reason: DisconnectReason::ProtocolMismatch },
-                            }).await;
-                            return format!("protocol mismatch: {e}");
-                        }
-                    }
-                }
-                SessionEventType::Heartbeat => {
-                    if let Err(e) = conn.send_reliable(&heartbeat_ack(session_id)).await {
-                        return format!("failed to send heartbeat ack: {e}");
-                    }
-                }
-                SessionEventType::Disconnect { reason } => return format!("peer disconnected ({reason:?})"),
-                SessionEventType::HelloAck { .. } | SessionEventType::HeartbeatAck | SessionEventType::Reconnect { .. } => {}
-            }
-            continue;
-        }
-
-        let start = std::time::Instant::now();
-        match dispatcher.apply(&event) {
-            Ok(true) => {
-                metrics.record_injection_time(start.elapsed().as_micros() as u64);
-                metrics.record_event_sent();
-            }
-            Ok(false) => {}
-            Err(e) => error!("Event handling error: {}", e),
-        }
-        let state = dispatcher.state();
-        metrics.update_state(
-            state.get_held_keys().len() as u32,
-            state.get_held_buttons().len() as u32,
-            state.has_active_composition(),
-        );
-    }
+fn render_qr(data: &str) -> Result<String> {
+    use qrcode::render::unicode::Dense1x2;
+    let code = qrcode::QrCode::new(data.as_bytes())?;
+    Ok(code.render::<Dense1x2>().quiet_zone(true).build())
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+fn default_name() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "Desktop".to_string())
 }

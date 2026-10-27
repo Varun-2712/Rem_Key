@@ -1,32 +1,52 @@
-//! Stands in for the phone app: connects to a running agent and sends one of each kind of
-//! input, so the whole pipeline can be checked without a phone.
+//! Stands in for the phone app: pairs with or connects to a running agent and sends one of
+//! each kind of input, so the whole pipeline can be checked without a phone.
 //!
-//!     cargo run -p pir_agent --example sim_phone -- 127.0.0.1:8080 <fingerprint from agent log>
+//!     pir-agent --pair                       # prints "Pairing data: {...}"
+//!     cargo run -p pir_agent --example sim_phone -- pair '<pairing data JSON>'
+//!     cargo run -p pir_agent --example sim_phone -- connect 127.0.0.1:8080 <agent fingerprint>
+//!
+//! The simulated phone keeps its identity in `--data-dir` (default: a `sim_phone` folder in
+//! the system temp directory), so after pairing once it can `connect` again.
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use anyhow::{bail, Context};
+use pir_agent::client;
 use pir_input::coalescer::{TouchCoalescer, TouchPoint};
 use pir_input::state::InputStateManager;
-use pir_protocol::events::{EventMetadata, InputEvent, KeyCode, ModifierState, ProtocolVersion, SessionEventType};
+use pir_pairing::pairing::PairingInfo;
+use pir_pairing::parse_fingerprint;
+use pir_protocol::events::{EventMetadata, InputEvent, KeyCode, ModifierState, SessionEventType};
 use pir_session::capabilities::get_default_phone_capabilities;
-use pir_transport::quic::QuicClientTransport;
 use pir_transport::InputTransport;
 use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut args = std::env::args().skip(1);
-    let addr = args.next().unwrap_or_else(|| "127.0.0.1:8080".into()).parse()?;
-    let fingerprint = parse_fingerprint(&args.next().ok_or_else(|| anyhow::anyhow!("usage: sim_phone <addr> <fingerprint>"))?)?;
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let data_dir = match args.iter().position(|a| a == "--data-dir") {
+        Some(i) => {
+            args.remove(i);
+            PathBuf::from(args.remove(i))
+        }
+        None => std::env::temp_dir().join("sim_phone"),
+    };
+    let identity = client::load_identity(&data_dir)?;
 
-    let mut conn = QuicClientTransport::connect(addr, "localhost", fingerprint).await?;
-    println!("connected to {addr}");
+    let mut conn = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["pair", json] => {
+            let info = PairingInfo::from_json(json).context("parsing pairing data")?;
+            let conn = client::pair(&info, &identity, "Simulated phone").await?;
+            println!("paired with {}", info.name);
+            conn
+        }
+        ["connect", addr, fingerprint] => client::connect(addr.parse()?, parse_fingerprint(fingerprint)?, &identity).await?,
+        _ => bail!("usage: sim_phone [--data-dir DIR] pair <json> | connect <addr> <fingerprint>"),
+    };
+    println!("connected to {}", conn.remote_addr().map(|a| a.to_string()).unwrap_or_default());
 
-    conn.send_reliable(&InputEvent::SessionEvent {
-        metadata: EventMetadata::new(Uuid::nil(), 0),
-        event: SessionEventType::Hello { version: ProtocolVersion::CURRENT, capabilities: get_default_phone_capabilities() },
-    }).await?;
-    let ack = expect_session_event(&mut conn).await?;
-    println!("handshake: {ack:?}");
+    let (version, capabilities) = client::hello(&mut conn, get_default_phone_capabilities()).await?;
+    println!("handshake: protocol {version}, capabilities {capabilities:?}");
 
     let session = Uuid::new_v4();
     let mut state = InputStateManager::new(session);
@@ -68,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
     println!("sent key, scroll, text and composition events");
 
     conn.send_reliable(&InputEvent::SessionEvent { metadata: EventMetadata::new(session, 0), event: SessionEventType::Heartbeat }).await?;
-    println!("heartbeat reply: {:?}", expect_session_event(&mut conn).await?);
+    println!("heartbeat reply: {:?}", client::next_session_event(&mut conn).await?);
 
     // Simulate the phone dying mid-shortcut: Shift is held and the connection just drops.
     let shift = ModifierState { shift: true, ..Default::default() };
@@ -83,20 +103,4 @@ async fn main() -> anyhow::Result<()> {
 
 fn state_update(state: &mut InputStateManager, text: &str) -> Vec<InputEvent> {
     state.handle_composition_update(text.to_string())
-}
-
-async fn expect_session_event(conn: &mut QuicClientTransport) -> anyhow::Result<SessionEventType> {
-    match tokio::time::timeout(Duration::from_secs(5), conn.recv()).await?? {
-        InputEvent::SessionEvent { event, .. } => Ok(event),
-        other => anyhow::bail!("expected a session event, got {other:?}"),
-    }
-}
-
-fn parse_fingerprint(hex: &str) -> anyhow::Result<[u8; 32]> {
-    anyhow::ensure!(hex.len() == 64, "fingerprint must be 64 hex characters");
-    let mut out = [0u8; 32];
-    for (i, byte) in out.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)?;
-    }
-    Ok(out)
 }

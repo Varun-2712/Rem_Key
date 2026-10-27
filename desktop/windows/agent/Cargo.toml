@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Phone Input Relay - Desktop Agent"
 
+[lib]
+name = "pir_agent"
+path = "src/lib.rs"
+
 [[bin]]
 name = "pir-agent"
 path = "src/main.rs"
@@ -13,6 +17,7 @@ pir_protocol = { workspace = true }
 pir_transport = { workspace = true }
 pir_input = { workspace = true }
 pir_session = { workspace = true }
+pir_pairing = { workspace = true }
 pir_input_adapter = { workspace = true }
 pir_diagnostics = { workspace = true }
 anyhow = { workspace = true }
@@ -21,3 +26,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 uuid = { workspace = true }
+qrcode = { version = "0.14", default-features = false }
+
+[dev-dependencies]
+tempfile = "3"

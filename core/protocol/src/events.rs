@@ -146,6 +146,10 @@ pub enum SessionEventType {
     HeartbeatAck,
     Disconnect { reason: DisconnectReason },
     Reconnect { session_id: Uuid },
+    /// Sent by an unpaired phone, with the one-time secret from the agent's QR code.
+    /// Added in 1.1; new variants go at the end so existing ones keep their encoding.
+    PairRequest { secret: String, device_name: String },
+    PairResult { accepted: bool },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -199,7 +203,7 @@ pub struct ProtocolVersion {
 }
 
 impl ProtocolVersion {
-    pub const CURRENT: Self = Self { major: 1, minor: 0, patch: 0 };
+    pub const CURRENT: Self = Self { major: 1, minor: 1, patch: 0 };
     pub const MIN_COMPATIBLE: Self = Self { major: 1, minor: 0, patch: 0 };
 }
 

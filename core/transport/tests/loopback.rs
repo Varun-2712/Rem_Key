@@ -1,6 +1,6 @@
 use std::time::Duration;
 use pir_protocol::events::{EventMetadata, InputEvent, KeyCode, ModifierState};
-use pir_transport::quic::{QuicClientTransport, QuicServerTransport};
+use pir_transport::quic::{QuicClientTransport, QuicServerTransport, TlsIdentity};
 use pir_transport::InputTransport;
 use uuid::Uuid;
 
@@ -37,7 +37,7 @@ async fn reliable_events_arrive_in_order_with_boundaries_intact() {
     let fingerprint = server.cert_fingerprint();
     let accept = tokio::spawn(async move { server.accept().await.unwrap() });
 
-    let mut client = QuicClientTransport::connect(addr, "localhost", fingerprint).await.unwrap();
+    let mut client = QuicClientTransport::connect(addr, "localhost", fingerprint, &TlsIdentity::generate().unwrap()).await.unwrap();
     // Back-to-back writes are what used to get merged into one read.
     for i in 0..500 {
         client.send_reliable(&key_down(i)).await.unwrap();
@@ -61,7 +61,7 @@ async fn unreliable_events_are_received() {
     let fingerprint = server.cert_fingerprint();
     let accept = tokio::spawn(async move { server.accept().await.unwrap() });
 
-    let mut client = QuicClientTransport::connect(addr, "localhost", fingerprint).await.unwrap();
+    let mut client = QuicClientTransport::connect(addr, "localhost", fingerprint, &TlsIdentity::generate().unwrap()).await.unwrap();
     // The server only sees the stream once something is written to it.
     client.send_reliable(&key_down(0)).await.unwrap();
     let mut conn = tokio::time::timeout(TIMEOUT, accept).await.unwrap().unwrap();
@@ -86,6 +86,28 @@ async fn rejects_server_with_unexpected_certificate() {
     wrong[0] ^= 0xff;
     tokio::spawn(async move { let _ = server.accept().await; });
 
-    let result = QuicClientTransport::connect(addr, "localhost", wrong).await;
+    let result = QuicClientTransport::connect(addr, "localhost", wrong, &TlsIdentity::generate().unwrap()).await;
     assert!(result.is_err(), "connection to an unpinned certificate must fail");
+}
+
+#[tokio::test]
+async fn server_sees_the_client_identity() {
+    let (mut server, addr) = start_server().await;
+    let fingerprint = server.cert_fingerprint();
+    let accept = tokio::spawn(async move { server.accept().await.unwrap() });
+
+    let phone = TlsIdentity::generate().unwrap();
+    let mut client = QuicClientTransport::connect(addr, "localhost", fingerprint, &phone).await.unwrap();
+    client.send_reliable(&key_down(0)).await.unwrap();
+
+    let conn = tokio::time::timeout(TIMEOUT, accept).await.unwrap().unwrap();
+    assert_eq!(conn.peer_fingerprint(), Some(phone.fingerprint()));
+    assert_eq!(client.peer_fingerprint(), Some(fingerprint));
+}
+
+#[test]
+fn identity_survives_der_round_trip() {
+    let identity = TlsIdentity::generate().unwrap();
+    let (cert, key) = identity.to_der();
+    assert_eq!(TlsIdentity::from_der(cert, key).fingerprint(), identity.fingerprint());
 }

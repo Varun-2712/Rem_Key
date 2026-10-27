@@ -1,79 +1,73 @@
-use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
-use rand::rngs::OsRng;
-use rand::Rng;
-use zeroize::Zeroize;
+use std::path::Path;
+use anyhow::{Context, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use hex;
+use crate::fsutil::write_private;
 
-#[derive(Clone)]
-pub struct DeviceIdentity {
-    signing_key: SigningKey,
-    verifying_key: VerifyingKey,
+/// A device's TLS certificate and private key (both DER), kept across restarts so that
+/// its fingerprint, which paired devices pin, stays the same.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct StoredIdentity {
+    #[serde(with = "b64")]
+    pub cert_der: Vec<u8>,
+    #[serde(with = "b64")]
+    pub key_der: Vec<u8>,
 }
 
-impl DeviceIdentity {
-    pub fn generate() -> Self {
-        let mut seed = [0u8; 32];
-        OsRng.fill(&mut seed);
-        let signing_key = SigningKey::from_bytes(&seed);
-        let verifying_key = signing_key.verifying_key();
-        Self { signing_key, verifying_key }
-    }
-
-    pub fn from_bytes(bytes: &[u8; 32]) -> anyhow::Result<Self> {
-        let signing_key = SigningKey::from_bytes(bytes);
-        let verifying_key = signing_key.verifying_key();
-        Ok(Self { signing_key, verifying_key })
-    }
-
-    pub fn public_key(&self) -> &VerifyingKey {
-        &self.verifying_key
-    }
-
-    pub fn public_key_bytes(&self) -> [u8; 32] {
-        self.verifying_key.to_bytes()
-    }
-
-    pub fn public_key_b64(&self) -> String {
-        BASE64_STANDARD.encode(self.verifying_key.as_bytes())
-    }
-
-    pub fn sign(&self, msg: &[u8]) -> Signature {
-        self.signing_key.sign(msg)
-    }
-
-    pub fn verify(&self, msg: &[u8], sig: &Signature) -> bool {
-        self.verifying_key.verify(msg, sig).is_ok()
-    }
-
-    pub fn device_id(&self) -> String {
-        format!("pir-{}", hex::encode(&self.verifying_key.as_bytes()[..8]))
+impl std::fmt::Debug for StoredIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredIdentity").field("cert_der", &self.cert_der.len()).finish_non_exhaustive()
     }
 }
 
-impl Drop for DeviceIdentity {
-    fn drop(&mut self) {
-        self.signing_key.to_bytes().zeroize();
+impl StoredIdentity {
+    pub const FILE_NAME: &'static str = "identity.json";
+
+    /// Loads the identity in `dir`, creating it with `generate` (returning certificate and
+    /// key DER) the first time.
+    pub fn load_or_create(dir: &Path, generate: impl FnOnce() -> Result<(Vec<u8>, Vec<u8>)>) -> Result<Self> {
+        let path = dir.join(Self::FILE_NAME);
+        if path.exists() {
+            let data = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+            return serde_json::from_slice(&data).with_context(|| format!("parsing {}", path.display()));
+        }
+        let (cert_der, key_der) = generate()?;
+        let identity = Self { cert_der, key_der };
+        write_private(&path, &serde_json::to_vec_pretty(&identity)?)?;
+        Ok(identity)
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PairingInfo {
-    pub version: u32,
-    pub device_id: String,
-    pub public_key: String,
-    pub endpoint: String,
-    pub name: String,
-    pub capabilities: Vec<String>,
-}
+mod b64 {
+    use super::*;
+    use serde::{Deserializer, Serializer};
 
-impl PairingInfo {
-    pub fn to_qr_json(&self) -> String {
-        serde_json::to_string(self).unwrap()
+    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&BASE64.encode(bytes))
     }
 
-    pub fn from_qr_json(json: &str) -> anyhow::Result<Self> {
-        Ok(serde_json::from_str(json)?)
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let s = String::deserialize(d)?;
+        BASE64.decode(s).map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generates_once_then_reloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = StoredIdentity::load_or_create(dir.path(), || Ok((vec![1, 2, 3], vec![4, 5]))).unwrap();
+        let second = StoredIdentity::load_or_create(dir.path(), || panic!("must not regenerate")).unwrap();
+        assert_eq!(first.cert_der, second.cert_der);
+        assert_eq!(first.key_der, second.key_der);
+    }
+
+    #[test]
+    fn debug_does_not_print_key() {
+        let identity = StoredIdentity { cert_der: vec![1], key_der: vec![0xAB; 4] };
+        assert!(!format!("{identity:?}").contains("171"));
     }
 }

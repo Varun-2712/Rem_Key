@@ -8,7 +8,7 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
 ## ✅ MVP 1 — Core Proof (COMPLETED)
 
 ### Core Infrastructure
-- [x] Cargo workspace with 6 crates
+- [x] Cargo workspace with 8 crates (6 core + Windows agent and input adapter)
 - [x] Workspace dependencies managed centrally
 - [x] All core crates compile without errors
 
@@ -164,7 +164,7 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
 | QUIC | quinn | Pure Rust, active maintenance |
 | Windows Input | windows-rs (SendInput) | Official Microsoft crate |
 | Discovery | mdns-sd | Cross-platform, zero-config |
-| Crypto | ed25519-dalek + rustls | Modern, audited, no C deps |
+| Crypto | rustls (ring) mutual TLS, pinned SHA-256 cert fingerprints | Audited, no separate key scheme to maintain |
 | Speech | Google ML Kit | On-device, free, offline |
 | FFI | UniFFI | Generates Kotlin/Swift from UDL |
 | Logging | tracing | Structured, spans, platform outputs |
@@ -174,7 +174,7 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
 ## Known Issues / TODOs
 
 ### Code Quality
-- [ ] Fix clippy warnings across workspace
+- [x] Fix clippy warnings across workspace
 - [ ] Add comprehensive unit tests (protocol, state, transport)
 - [ ] Add integration tests (E2E)
 - [ ] Document public APIs
@@ -183,6 +183,9 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
 - [ ] Verify `reset_input_state()` called on ALL error paths in agent
 - [ ] Add QUIC stream prioritization for key events
 - [x] Certificate validation (pinned fingerprints from QR pairing)
+- [ ] `InputStateManager::active_drag` is never set outside tests; wire drag tracking into the input path or remove it
+- [ ] `HeartbeatManager` is not used by the agent; the server only answers heartbeats
+- [ ] `mdns-sd` is declared in the workspace but no crate uses it yet (MVP 2 discovery)
 
 ### Build
 - [ ] Windows cross-compilation setup

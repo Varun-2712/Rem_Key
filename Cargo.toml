@@ -47,10 +47,7 @@ windows = { version = "0.58", features = [
 
 # Crypto
 ring = "0.17"
-ed25519-dalek = "2.0"
-x25519-dalek = "2.0"
 rand = "0.8"
-zeroize = "1.0"
 
 # Utils
 uuid = { version = "1.0", features = ["v4", "serde", "fast-rng"] }

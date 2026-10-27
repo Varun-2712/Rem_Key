@@ -4,10 +4,6 @@ version = "0.1.0"
 edition = "2021"
 description = "Phone Input Relay - Diagnostics and metrics"
 
-[lib]
-name = "pir_diagnostics"
-crate-type = ["cdylib", "staticlib", "rlib"]
-
 [dependencies]
 pir_protocol = { path = "../protocol" }
 anyhow = { workspace = true }

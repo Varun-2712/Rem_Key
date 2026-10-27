@@ -4,10 +4,6 @@ version = "0.1.0"
 edition = "2021"
 description = "Phone Input Relay - Protocol definitions and codec"
 
-[lib]
-name = "pir_protocol"
-crate-type = ["cdylib", "staticlib", "rlib"]
-
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 bincode = { workspace = true }

@@ -3,20 +3,15 @@ use uuid::Uuid;
 use pir_protocol::events::{ProtocolVersion, CapabilitySet, DisconnectReason};
 use tracing::{info, warn};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SessionState {
+    #[default]
     Disconnected,
     Connecting,
     Negotiating,
     Connected,
     Degraded,
     Reconnecting,
-}
-
-impl Default for SessionState {
-    fn default() -> Self {
-        SessionState::Disconnected
-    }
 }
 
 #[derive(Debug, Clone)]

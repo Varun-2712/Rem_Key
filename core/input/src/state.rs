@@ -17,8 +17,6 @@ pub struct InputStateManager {
 #[derive(Debug, Clone)]
 struct DragState {
     button: MouseButton,
-    start_x: i32,
-    start_y: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -234,7 +232,7 @@ mod tests {
         state.handle_key_down(KeyCode::ShiftLeft, shift);
         state.handle_key_down(KeyCode::KeyA, shift);
         state.handle_mouse_button(MouseButton::Left, true);
-        state.active_drag = Some(DragState { button: MouseButton::Left, start_x: 0, start_y: 0 });
+        state.active_drag = Some(DragState { button: MouseButton::Left });
 
         let events = state.reset_input_state();
         let key_ups = events.iter().filter(|e| matches!(e, InputEvent::KeyUp { .. })).count();
